@@ -142,7 +142,7 @@ pub async fn sync(app: &App, cfg: &Config) -> Result<bool> {
         .map(|a| {
             let provider = crate::providers::Provider::from_id(&a.provider);
             let plan = provider.map(|p| p.plan_label(a.profile.as_ref())).unwrap_or_default();
-            let name = provider.map(|p| p.info().name).unwrap_or("");
+            let name = provider.map(|p| p.info().name).unwrap_or_default();
             let desc = [Some(format!("{name} {plan}").trim().to_string()), a.email.clone()]
                 .into_iter()
                 .flatten()

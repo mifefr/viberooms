@@ -1,0 +1,225 @@
+[
+  {
+    "id": "openrouter",
+    "name": "OpenRouter",
+    "tool": "OpenRouter",
+    "category": "api",
+    "description": { "en": "Spending limit and usage of an OpenRouter API key (today, this month).", "fr": "Plafond de dépense et usage d'une clé API OpenRouter (aujourd'hui, ce mois)." },
+    "keyUrl": "https://openrouter.ai/settings/keys",
+    "docsUrl": "https://openrouter.ai/docs/api/reference/limits",
+    "fields": [
+      { "id": "key", "secret": true, "placeholder": "sk-or-v1-…", "label": { "en": "API key", "fr": "Clé API" } }
+    ],
+    "spec": {
+      "name": "OpenRouter",
+      "url": "https://openrouter.ai/api/v1/key",
+      "headers": { "Authorization": "Bearer {{key}}" },
+      "identity": "/data/label",
+      "limits": [
+        { "key": "key_limit", "label": "Key limit|Plafond clé", "kind": "balance", "used": "/data/usage", "limit": "/data/limit", "remaining": "/data/limit_remaining", "unit": "USD" },
+        { "key": "today", "label": "Today|Aujourd'hui", "kind": "day", "used": "/data/usage_daily", "reset": "daily", "unit": "USD" },
+        { "key": "month", "label": "This month|Ce mois", "kind": "month", "used": "/data/usage_monthly", "reset": "monthly", "unit": "USD" }
+      ]
+    }
+  },
+  {
+    "id": "openrouter-credits",
+    "name": "OpenRouter credits",
+    "tool": "OpenRouter",
+    "category": "api",
+    "description": { "en": "Prepaid credits of the whole OpenRouter account (needs a Management key).", "fr": "Crédits prépayés de tout le compte OpenRouter (clé de gestion requise)." },
+    "keyUrl": "https://openrouter.ai/settings/management-keys",
+    "docsUrl": "https://openrouter.ai/docs/api/api-reference/credits/get-credits",
+    "fields": [
+      { "id": "key", "secret": true, "placeholder": "sk-or-v1-…", "label": { "en": "Management key", "fr": "Clé de gestion" } }
+    ],
+    "spec": {
+      "name": "OpenRouter credits",
+      "url": "https://openrouter.ai/api/v1/credits",
+      "headers": { "Authorization": "Bearer {{key}}" },
+      "limits": [
+        { "key": "credits", "label": "Credits|Crédits", "kind": "balance", "used": "/data/total_usage", "limit": "/data/total_credits", "unit": "USD" }
+      ]
+    }
+  },
+  {
+    "id": "deepseek",
+    "name": "DeepSeek",
+    "tool": "DeepSeek",
+    "category": "api",
+    "description": { "en": "Prepaid balance of a DeepSeek API account.", "fr": "Solde prépayé d'un compte API DeepSeek." },
+    "keyUrl": "https://platform.deepseek.com/api_keys",
+    "docsUrl": "https://api-docs.deepseek.com/api/get-user-balance",
+    "fields": [
+      { "id": "key", "secret": true, "placeholder": "sk-…", "label": { "en": "API key", "fr": "Clé API" } }
+    ],
+    "spec": {
+      "name": "DeepSeek",
+      "url": "https://api.deepseek.com/user/balance",
+      "headers": { "Authorization": "Bearer {{key}}" },
+      "limits": [
+        { "key": "balance", "label": "Balance|Solde", "kind": "balance", "remaining": "/balance_infos/0/total_balance", "unitPath": "/balance_infos/0/currency", "unit": "CNY" }
+      ]
+    }
+  },
+  {
+    "id": "moonshot",
+    "name": "Moonshot (Kimi API)",
+    "tool": "Moonshot",
+    "category": "api",
+    "description": { "en": "Pay-as-you-go balance of a Moonshot / Kimi API account (international platform).", "fr": "Solde à l'usage d'un compte API Moonshot / Kimi (plateforme internationale)." },
+    "keyUrl": "https://platform.moonshot.ai/console/api-keys",
+    "docsUrl": "https://platform.kimi.ai/docs/api/balance",
+    "fields": [
+      { "id": "key", "secret": true, "placeholder": "sk-…", "label": { "en": "API key", "fr": "Clé API" } }
+    ],
+    "spec": {
+      "name": "Moonshot",
+      "url": "https://api.moonshot.ai/v1/users/me/balance",
+      "headers": { "Authorization": "Bearer {{key}}" },
+      "limits": [
+        { "key": "balance", "label": "Balance|Solde", "kind": "balance", "remaining": "/data/available_balance", "unit": "USD" }
+      ]
+    }
+  },
+  {
+    "id": "kimi-code",
+    "name": "Kimi Code",
+    "tool": "Kimi Code",
+    "category": "subscription",
+    "experimental": true,
+    "description": { "en": "Kimi Code subscription: 5-hour window, week and monthly quota.", "fr": "Abonnement Kimi Code : fenêtre 5 h, semaine et quota mensuel." },
+    "keyUrl": "https://www.kimi.com/code/console",
+    "fields": [
+      { "id": "key", "secret": true, "placeholder": "sk-…", "label": { "en": "Kimi Code key", "fr": "Clé Kimi Code" } }
+    ],
+    "spec": {
+      "name": "Kimi Code",
+      "url": "https://api.kimi.com/coding/v1/usages",
+      "headers": { "Authorization": "Bearer {{key}}" },
+      "limits": [
+        { "key": "five_hour", "kind": "session", "windowMs": 18000000, "limit": "/limits/0/detail/limit", "remaining": "/limits/0/detail/remaining", "resetsAt": "/limits/0/detail/resetTime" },
+        { "key": "week", "kind": "week", "windowMs": 604800000, "limit": "/usage/limit", "remaining": "/usage/remaining", "resetsAt": "/usage/resetTime" },
+        { "key": "month", "label": "Monthly quota|Quota mensuel", "kind": "month", "limit": "/totalQuota/limit", "remaining": "/totalQuota/remaining" }
+      ]
+    }
+  },
+  {
+    "id": "zai-coding",
+    "name": "GLM Coding Plan",
+    "tool": "GLM Coding Plan",
+    "category": "subscription",
+    "experimental": true,
+    "description": { "en": "Z.ai GLM Coding Plan: 5-hour and weekly token windows, monthly tool calls.", "fr": "GLM Coding Plan de Z.ai : fenêtres de jetons 5 h et hebdo, appels d'outils mensuels." },
+    "keyUrl": "https://z.ai/manage-apikey/apikey-list",
+    "fields": [
+      { "id": "key", "secret": true, "placeholder": "…", "label": { "en": "Coding Plan API key", "fr": "Clé API du Coding Plan" } }
+    ],
+    "spec": {
+      "name": "GLM Coding Plan",
+      "url": "https://api.z.ai/api/monitor/usage/quota/limit",
+      "headers": { "Authorization": "Bearer {{key}}" },
+      "plan": "/data/level",
+      "limits": [
+        { "key": "five_hour", "kind": "session", "windowMs": 18000000, "percent": "/data/limits/[type=TOKENS_LIMIT,unit=3]/percentage", "resetsAt": "/data/limits/[type=TOKENS_LIMIT,unit=3]/nextResetTime" },
+        { "key": "week", "kind": "week", "windowMs": 604800000, "percent": "/data/limits/[type=TOKENS_LIMIT,unit=6]/percentage", "resetsAt": "/data/limits/[type=TOKENS_LIMIT,unit=6]/nextResetTime" },
+        { "key": "tools", "label": "Tool calls|Appels d'outils", "kind": "month", "limit": "/data/limits/[type=TIME_LIMIT]/usage", "used": "/data/limits/[type=TIME_LIMIT]/currentValue", "reset": "monthly" }
+      ]
+    }
+  },
+  {
+    "id": "xai-api",
+    "name": "xAI API (Grok)",
+    "tool": "xAI",
+    "category": "api",
+    "description": { "en": "Prepaid credits of an xAI team (Management key). The ledger is updated when the billing cycle closes.", "fr": "Crédits prépayés d'une équipe xAI (clé de gestion). Le solde est mis à jour à la clôture du cycle de facturation." },
+    "keyUrl": "https://console.x.ai",
+    "docsUrl": "https://docs.x.ai/developers/rest-api-reference/management/billing",
+    "fields": [
+      { "id": "key", "secret": true, "placeholder": "xai-…", "label": { "en": "Management key", "fr": "Clé de gestion" } },
+      { "id": "team_id", "placeholder": "00000000-…", "label": { "en": "Team ID", "fr": "ID d'équipe" } }
+    ],
+    "spec": {
+      "name": "xAI API",
+      "url": "https://management-api.x.ai/v1/billing/teams/{{field.team_id}}/prepaid/balance",
+      "headers": { "Authorization": "Bearer {{key}}" },
+      "limits": [
+        { "key": "prepaid", "label": "Prepaid credits|Crédits prépayés", "kind": "balance", "remaining": "/total/val", "remainingScale": -0.01, "unit": "USD" }
+      ]
+    }
+  },
+  {
+    "id": "anthropic-api",
+    "name": "Anthropic API",
+    "tool": "Anthropic API",
+    "category": "api",
+    "description": { "en": "Month-to-date spend of an Anthropic Console organization (Admin key), against an optional budget.", "fr": "Dépenses du mois d'une organisation Anthropic Console (clé admin), face à un budget facultatif." },
+    "keyUrl": "https://platform.claude.com/settings/admin-keys",
+    "docsUrl": "https://platform.claude.com/docs/en/manage-claude/usage-cost-api",
+    "fields": [
+      { "id": "key", "secret": true, "placeholder": "sk-ant-admin01-…", "label": { "en": "Admin key", "fr": "Clé admin" } },
+      { "id": "budget", "optional": true, "placeholder": "100", "label": { "en": "Monthly budget (USD)", "fr": "Budget mensuel (USD)" } }
+    ],
+    "spec": {
+      "name": "Anthropic API",
+      "requests": [
+        { "id": "cost", "url": "https://api.anthropic.com/v1/organizations/cost_report?starting_at={{month_start}}&limit=31", "headers": { "x-api-key": "{{key}}", "anthropic-version": "2023-06-01" } }
+      ],
+      "limits": [
+        { "key": "month", "label": "Spent this month|Dépensé ce mois", "kind": "month", "used": "/cost/data/*/results/*/amount", "usedScale": 0.01, "limitValue": "{{field.budget}}", "reset": "monthly", "unit": "USD" }
+      ]
+    }
+  },
+  {
+    "id": "openai-api",
+    "name": "OpenAI API",
+    "tool": "OpenAI API",
+    "category": "api",
+    "description": { "en": "Month-to-date spend of an OpenAI organization (Admin key), against its monthly spend limit.", "fr": "Dépenses du mois d'une organisation OpenAI (clé admin), face à son plafond mensuel." },
+    "keyUrl": "https://platform.openai.com/settings/organization/admin-keys",
+    "docsUrl": "https://developers.openai.com/api/docs/guides/spend-limits",
+    "fields": [
+      { "id": "key", "secret": true, "placeholder": "sk-admin-…", "label": { "en": "Admin key", "fr": "Clé admin" } },
+      { "id": "budget", "optional": true, "placeholder": "100", "label": { "en": "Monthly budget (USD), if no spend limit is set", "fr": "Budget mensuel (USD), si aucun plafond n'est défini" } }
+    ],
+    "spec": {
+      "name": "OpenAI API",
+      "requests": [
+        { "id": "costs", "url": "https://api.openai.com/v1/organization/costs?start_time={{month_start_unix}}&limit=31", "headers": { "Authorization": "Bearer {{key}}" } },
+        { "id": "limit", "url": "https://api.openai.com/v1/organization/spend_limit", "headers": { "Authorization": "Bearer {{key}}" }, "optional": true }
+      ],
+      "limits": [
+        { "key": "month", "label": "Spent this month|Dépensé ce mois", "kind": "month", "used": "/costs/data/*/results/*/amount/value", "limit": "/limit/threshold_amount", "limitScale": 0.01, "limitValue": "{{field.budget}}", "reset": "monthly", "unit": "USD" }
+      ]
+    }
+  },
+  {
+    "id": "copilot",
+    "name": "GitHub Copilot",
+    "tool": "GitHub Copilot",
+    "category": "subscription",
+    "experimental": true,
+    "description": { "en": "Premium requests (or AI credits) of a Copilot seat this month. Use the token printed by `gh auth token`.", "fr": "Requêtes premium (ou crédits IA) d'un siège Copilot ce mois-ci. Utilise le jeton affiché par `gh auth token`." },
+    "keyUrl": "https://cli.github.com/manual/gh_auth_token",
+    "fields": [
+      { "id": "key", "secret": true, "placeholder": "gho_…", "label": { "en": "GitHub token", "fr": "Jeton GitHub" } },
+      { "id": "credits", "optional": true, "placeholder": "300", "label": { "en": "Monthly AI credit allowance (usage-based seats)", "fr": "Crédits IA mensuels inclus (sièges facturés à l'usage)" } }
+    ],
+    "spec": {
+      "name": "GitHub Copilot",
+      "url": "https://api.github.com/copilot_internal/user",
+      "headers": {
+        "Authorization": "token {{key}}",
+        "Editor-Version": "vscode/1.96.2",
+        "Editor-Plugin-Version": "copilot-chat/0.26.7",
+        "User-Agent": "GitHubCopilotChat/0.26.7",
+        "X-Github-Api-Version": "2025-04-01"
+      },
+      "plan": "/copilot_plan",
+      "limits": [
+        { "key": "premium", "label": "Premium requests|Requêtes premium", "kind": "month", "limit": "/quota_snapshots/premium_interactions/entitlement", "remaining": "/quota_snapshots/premium_interactions/remaining", "resetsAt": "/quota_reset_date", "skipIf": "/quota_snapshots/premium_interactions/unlimited", "unit": "req" },
+        { "key": "credits", "label": "AI credits|Crédits IA", "kind": "month", "used": "/quota_snapshots/premium_interactions/credits_used", "limitValue": "{{field.credits}}", "resetsAt": "/quota_reset_date", "unit": "credits" }
+      ]
+    }
+  }
+]

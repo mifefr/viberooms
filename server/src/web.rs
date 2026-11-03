@@ -3,7 +3,7 @@
 use crate::derive::{self, Window};
 use crate::i18n::{self, t};
 use crate::poller::{self, Status};
-use crate::providers::{self, Extra, Provider, Share, Snapshot};
+use crate::providers::{self, declarative, AuthKind, Extra, Provider, Share, Snapshot, TokenSet};
 use crate::store::{Account, NewAccount, Tokens};
 use crate::{now_ms, App, Flow, VERSION};
 use axum::extract::{Path, Query, Request, State};
@@ -51,8 +51,10 @@ pub struct WindowView {
 pub struct AccountView {
     pub id: String,
     pub provider: String,
-    pub provider_name: &'static str,
-    pub tool: &'static str,
+    pub provider_name: String,
+    pub tool: String,
+    /// How the account signs in (OAuth, API key or custom connector): drives the reconnect flow.
+    pub auth: Option<AuthKind>,
     pub label: String,
     pub color: String,
     pub order: i64,
@@ -119,8 +121,9 @@ fn account_view(app: &App, acc: &Account, now: i64) -> AccountView {
     AccountView {
         id: acc.id.clone(),
         provider: acc.provider.clone(),
-        provider_name: info.as_ref().map(|i| i.name).unwrap_or("?"),
-        tool: info.as_ref().map(|i| i.tool).unwrap_or("?"),
+        provider_name: info.as_ref().map(|i| i.name.clone()).unwrap_or_else(|| "?".into()),
+        tool: info.as_ref().map(|i| i.tool.clone()).unwrap_or_else(|| "?".into()),
+        auth: provider.map(|p| p.auth()),
         label: acc.label.clone(),
         color: acc.color.clone(),
         order: acc.order,
@@ -189,6 +192,25 @@ fn pct(w: &Option<WindowView>) -> String {
     w.as_ref().map(|w| format!("{} %", w.w.utilization.round() as i64)).unwrap_or_else(|| "—".into())
 }
 
+/// "12.40 USD left", "37 %"… for a limit shown as a single value.
+fn principal_text(w: &Window) -> String {
+    match (w.remaining, w.has_percent) {
+        (Some(r), _) => format!("{} {}", amount(r), w.unit.as_deref().unwrap_or("")).trim().to_string(),
+        (None, true) => format!("{} %", w.utilization.round() as i64),
+        (None, false) => {
+            w.used.map(|u| format!("{} {}", amount(u), w.unit.as_deref().unwrap_or("")).trim().to_string()).unwrap_or_else(|| "—".into())
+        }
+    }
+}
+
+fn amount(v: f64) -> String {
+    if v.abs() >= 100.0 {
+        format!("{v:.0}")
+    } else {
+        format!("{v:.2}")
+    }
+}
+
 fn homepage_view(lang: i18n::Lang, a: &AccountView) -> Value {
     let statut = match a.status {
         "ok" if a.recommended => t(lang, "st_top"),
@@ -199,9 +221,12 @@ fn homepage_view(lang: i18n::Lang, a: &AccountView) -> Value {
         "reauth" => t(lang, "st_reauth"),
         _ => t(lang, "st_pending"),
     };
-    let session = match &a.session {
-        Some(w) if w.w.resets_at.is_none() => format!("0 % ({})", t(lang, "free")),
-        s => pct(s),
+    let session = match (&a.session, a.windows.first()) {
+        (Some(w), _) if w.w.resets_at.is_none() => format!("0 % ({})", t(lang, "free")),
+        (Some(_), _) => pct(&a.session),
+        // No session window (API key, prepaid credits): show the main limit instead.
+        (None, Some(w)) => principal_text(&w.w),
+        (None, None) => "—".into(),
     };
     json!({
         "label": a.label,
@@ -226,7 +251,7 @@ async fn h_health(State(app): AppState) -> Json<Value> {
 }
 
 async fn h_providers() -> Json<Value> {
-    Json(json!({ "providers": Provider::ALL.iter().map(|p| p.info()).collect::<Vec<_>>() }))
+    Json(json!({ "providers": Provider::all().into_iter().map(|p| p.info()).collect::<Vec<_>>() }))
 }
 
 #[derive(Deserialize)]
@@ -321,7 +346,8 @@ async fn h_login_start(State(app): AppState, Json(b): Json<LoginStart>) -> R<Jso
     }
     .ok_or_else(|| err(StatusCode::BAD_REQUEST, "unknown provider"))?;
     let pkce = providers::new_pkce();
-    let url = provider.authorize_url(&pkce);
+    let url =
+        provider.authorize_url(&pkce).ok_or_else(|| err(StatusCode::BAD_REQUEST, "this provider signs in with an API key, not OAuth"))?;
     let flow_id: String = pkce.state.chars().take(16).collect();
     let mut flows = app.flows.lock().unwrap();
     flows.retain(|_, f| now_ms() - f.created_at < FLOW_TTL_MS);
@@ -406,7 +432,7 @@ async fn h_login_finish(State(app): AppState, Json(b): Json<LoginFinish>) -> R<J
     let acc = app
         .store
         .add(NewAccount {
-            provider: provider.id().to_string(),
+            provider: provider.id(),
             label: flow.label,
             email: id.email.clone(),
             org_name: id.org_name,
@@ -420,6 +446,150 @@ async fn h_login_finish(State(app): AppState, Json(b): Json<LoginFinish>) -> R<J
     app.track(&acc.id, Duration::from_millis(200));
     app.accounts_changed();
     Ok(Json(json!({ "id": acc.id, "reconnected": false, "email": id.email })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyLogin {
+    provider: String,
+    label: Option<String>,
+    /// Form fields; the provider's secret field holds the key.
+    #[serde(default)]
+    fields: serde_json::Map<String, Value>,
+    /// Custom connector description (provider `custom` only).
+    connector: Option<declarative::Spec>,
+    /// Replace the key of an existing account.
+    account_id: Option<String>,
+}
+
+/// Builds the token set of an API-key or custom account from the submitted form.
+fn key_tokens(
+    provider: Provider,
+    fields: &serde_json::Map<String, Value>,
+    connector: Option<declarative::Spec>,
+    require_limits: bool,
+) -> Result<TokenSet, ApiErr> {
+    let info = provider.info();
+    let secret_id = info.fields.iter().find(|f| f.secret).map(|f| f.id.clone()).unwrap_or_else(|| "key".into());
+    let key = fields.get(&secret_id).and_then(Value::as_str).unwrap_or("").trim().to_string();
+    for f in &info.fields {
+        let v = fields.get(&f.id).and_then(Value::as_str).unwrap_or("").trim();
+        if !f.optional && v.is_empty() {
+            return Err(err(StatusCode::BAD_REQUEST, format!("missing field: {}", f.label.en)));
+        }
+    }
+    let public: serde_json::Map<String, Value> =
+        fields.iter().filter(|(k, _)| **k != secret_id).map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut meta = json!({ "fields": public, "fingerprint": providers::fingerprint(&format!("{}:{key}", provider.id())) });
+    if provider == Provider::Custom {
+        let spec = connector.ok_or_else(|| err(StatusCode::BAD_REQUEST, "missing connector description"))?;
+        if require_limits && spec.limits.is_empty() {
+            return Err(err(StatusCode::BAD_REQUEST, "the connector must describe at least one limit"));
+        }
+        meta["connector"] = serde_json::to_value(&spec).unwrap();
+        meta["fingerprint"] = json!(providers::fingerprint(&format!("custom:{}:{key}", spec.url)));
+    }
+    Ok(TokenSet { access_token: key, refresh_token: None, expires_at: providers::NEVER, scope: None, meta: Some(meta) })
+}
+
+/// Tries a connector without saving anything: used by the dashboard to preview a custom connector.
+async fn h_connector_test(State(app): AppState, Json(b): Json<KeyLogin>) -> R<Json<Value>> {
+    let provider = Provider::from_id(&b.provider)
+        .filter(|p| p.auth() != AuthKind::Oauth)
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "unknown provider"))?;
+    let tokens = key_tokens(provider, &b.fields, b.connector, false)?;
+    match provider.fetch(&app.http, &tokens).await {
+        Ok((snap, raw)) => {
+            let mut text = serde_json::to_string_pretty(&raw).unwrap_or_default();
+            if text.len() > 20_000 {
+                text.truncate(20_000);
+                text.push_str("\n…");
+            }
+            Ok(Json(json!({ "ok": true, "limits": snap.limits, "raw": text })))
+        }
+        Err(e) => Ok(Json(json!({ "ok": false, "error": e.message }))),
+    }
+}
+
+/// Adds (or updates) an API-key / custom account after checking that the key works.
+async fn h_key_login(State(app): AppState, Json(b): Json<KeyLogin>) -> R<Json<Value>> {
+    let provider = Provider::from_id(&b.provider)
+        .filter(|p| p.auth() != AuthKind::Oauth)
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "unknown provider"))?;
+    let mut tokens = key_tokens(provider, &b.fields, b.connector, true)?;
+    let (snap, raw) =
+        provider.fetch(&app.http, &tokens).await.map_err(|e| err(StatusCode::BAD_GATEWAY, format!("the service refused this key: {e}")))?;
+    if snap.limits.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "the service answered, but no limit could be read from its answer"));
+    }
+    let spec = provider.spec(&tokens);
+    let meta = tokens.meta.get_or_insert_with(|| json!({}));
+    if let Some(spec) = &spec {
+        if let Some(id) = declarative::identity_of(spec, &raw) {
+            meta["identity"] = json!(id);
+        }
+        if let Some(plan) = declarative::plan_of(spec, &raw) {
+            meta["plan"] = json!(plan);
+        }
+    }
+    let fp = meta.get("fingerprint").and_then(Value::as_str).map(str::to_owned);
+    let identity = meta.get("identity").and_then(Value::as_str).map(str::to_owned);
+    let profile = Some(meta.clone());
+    let store_tokens = Tokens {
+        access_token: tokens.access_token.clone(),
+        refresh_token: None,
+        expires_at: tokens.expires_at,
+        scope: None,
+        meta: tokens.meta.clone(),
+    };
+    let existing = match &b.account_id {
+        Some(id) => app.store.get(id),
+        None => app.store.list().into_iter().find(|a| a.provider == provider.id() && a.account_uuid.is_some() && a.account_uuid == fp),
+    };
+    let label = b.label.map(|s| s.trim().chars().take(40).collect::<String>()).filter(|s| !s.is_empty());
+    let (id, reconnected) = match existing {
+        Some(acc) => {
+            app.store
+                .update(&acc.id, |a| {
+                    a.tokens = store_tokens;
+                    a.profile = profile.clone();
+                    a.account_uuid = fp.clone();
+                    if let Some(l) = label.clone() {
+                        a.label = l;
+                    }
+                })
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            (acc.id, true)
+        }
+        None => {
+            let name = provider.spec(&tokens).map(|s| s.name).unwrap_or_else(|| provider.info().name);
+            let acc = app
+                .store
+                .add(NewAccount {
+                    provider: provider.id(),
+                    label: label.or(Some(name)),
+                    email: identity.clone(),
+                    org_name: None,
+                    account_uuid: fp.clone(),
+                    org_uuid: None,
+                    profile: profile.clone(),
+                    tokens: store_tokens,
+                })
+                .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+            (acc.id, false)
+        }
+    };
+    // Record the first measure right away so the card is filled immediately.
+    let points: Vec<_> = snap.limits.iter().map(|l| (l.key.clone(), l.utilization, l.resets_at)).collect();
+    let _ = app.store.record_usage(&id, now_ms(), &serde_json::to_value(&snap).unwrap_or(Value::Null), &raw, &points);
+    app.with_rt(&id, |r| {
+        r.status = Status::Ok;
+        r.fetched_at = Some(now_ms());
+        r.profile_at = Some(now_ms());
+    });
+    app.track(&id, Duration::from_millis(poller::poll_interval().as_millis() as u64));
+    app.accounts_changed();
+    Ok(Json(json!({ "id": id, "reconnected": reconnected, "email": identity })))
 }
 
 #[derive(Deserialize)]
@@ -503,6 +673,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/refresh", post(h_refresh))
         .route("/api/login/start", post(h_login_start))
         .route("/api/login/finish", post(h_login_finish))
+        .route("/api/accounts/key", post(h_key_login))
+        .route("/api/connectors/test", post(h_connector_test))
         .route("/api/accounts/{id}", patch(h_patch_account).delete(h_delete_account))
         .layer(middleware::from_fn(guard));
     Router::new()
@@ -523,8 +695,9 @@ mod tests {
         AccountView {
             id: id.into(),
             provider: provider.into(),
-            provider_name: "",
-            tool: "",
+            provider_name: String::new(),
+            tool: String::new(),
+            auth: None,
             label: id.into(),
             color: "acc-1".into(),
             order: 0,

@@ -64,6 +64,47 @@ def codex_usage(acct):
         "credits": {"has_credits": False, "unlimited": False, "balance": "0"},
     }
 
+# ---------- API-key presets (fixtures, see deploy/demo-presets.sh) ----------
+def month_start():
+    t = time.gmtime(); return time.mktime((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, 0)) - time.timezone
+
+def fixture(path):
+    el = time.time() - T0
+    spent = 12.4 + el / 300
+    nxt = int((T0 + 3 * 3600) * 1000)
+    if path.startswith("openrouter.ai/api/v1/key"):
+        return {"data": {"label": "demo-key", "limit": 50, "limit_reset": "monthly", "limit_remaining": round(50 - spent, 2), "usage": round(spent, 2),
+                         "usage_daily": round(1.2 + el / 900, 2), "usage_weekly": 6.8, "usage_monthly": round(spent, 2), "is_free_tier": False}}
+    if path.startswith("openrouter.ai/api/v1/credits"):
+        return {"data": {"total_credits": 100.5, "total_usage": round(25.75 + el / 400, 2)}}
+    if path.startswith("api.deepseek.com/user/balance"):
+        return {"is_available": True, "balance_infos": [{"currency": "CNY", "total_balance": f"{max(0, 23.1 - el / 1000):.2f}", "granted_balance": "0.00", "topped_up_balance": "23.10"}]}
+    if path.startswith("api.moonshot.ai/v1/users/me/balance"):
+        return {"code": 0, "status": True, "data": {"available_balance": 49.58, "voucher_balance": 46.58, "cash_balance": 3.0}}
+    if path.startswith("api.kimi.com/coding/v1/usages"):
+        rem5 = max(0, 100 - int(30 + el / 20))
+        return {"usage": {"limit": "1000", "remaining": "640", "resetTime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(T0 + 5 * 86400))},
+                "limits": [{"window": {"duration": 300, "timeUnit": "TIME_UNIT_MINUTE"}, "detail": {"limit": "100", "remaining": str(rem5), "resetTime": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(T0 + 2 * 3600))}}],
+                "totalQuota": {"limit": "5000", "remaining": "4000"}}
+    if path.startswith("api.z.ai/api/monitor/usage/quota/limit"):
+        return {"code": 200, "success": True, "data": {"level": "pro", "limits": [
+            {"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": min(100, int(7 + el / 30)), "nextResetTime": nxt},
+            {"type": "TOKENS_LIMIT", "unit": 6, "number": 7, "percentage": 53, "nextResetTime": int((T0 + 4 * 86400) * 1000)},
+            {"type": "TIME_LIMIT", "unit": 5, "number": 1, "usage": 1000, "currentValue": 42}]}}
+    if path.startswith("management-api.x.ai/"):
+        return {"changes": [], "total": {"val": "-1840"}}
+    if path.startswith("api.anthropic.com/v1/organizations/cost_report"):
+        return {"data": [{"starting_at": "", "results": [{"amount": f"{(4200 + el * 2):.1f}", "currency": "USD"}]}, {"results": [{"amount": "1880.5"}]}], "has_more": False}
+    if path.startswith("api.openai.com/v1/organization/costs"):
+        return {"object": "page", "data": [{"results": [{"amount": {"value": round(31.2 + el / 200, 2), "currency": "usd"}}]}], "has_more": False}
+    if path.startswith("api.openai.com/v1/organization/spend_limit"):
+        return {"object": "organization.spend_limit", "threshold_amount": 10000, "currency": "USD", "interval": "month"}
+    if path.startswith("api.github.com/copilot_internal/user"):
+        rem = max(0, 210 - int(el / 60))
+        return {"copilot_plan": "individual_pro", "quota_reset_date": time.strftime("%Y-%m-01", time.gmtime(time.time() + 31 * 86400)),
+                "quota_snapshots": {"premium_interactions": {"entitlement": 300, "remaining": rem, "unlimited": False}}}
+    return None
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, fmt, *a):
         sys.stderr.write("mock " + fmt % a + "\n")
@@ -140,6 +181,9 @@ class H(BaseHTTPRequestHandler):
         self.reply(400, {"error": "unsupported_grant_type"})
 
     def do_GET(self):
+        if self.path.startswith("/fx/"):
+            fx = fixture(self.path[4:])
+            return self.reply(200, fx) if fx is not None else self.reply(404, {"error": "no fixture"})
         auth = self.headers.get("Authorization", "")[7:]
         if self.path == "/backend-api/wham/usage":
             tok = C_TOKENS.get(auth)

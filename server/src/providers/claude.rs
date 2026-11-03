@@ -183,14 +183,7 @@ fn window(key: &str, val: &Value) -> Option<Limit> {
             ("model", Some(name), 7 * D)
         }
     };
-    Some(Limit {
-        key: key.to_string(),
-        kind: kind.to_string(),
-        name,
-        window_ms: Some(ms),
-        utilization: util.clamp(0.0, 100.0),
-        resets_at: val.get("resets_at").and_then(parse_rfc3339).map(round_reset),
-    })
+    Some(Limit::percent(key, kind, name, Some(ms), util.clamp(0.0, 100.0), val.get("resets_at").and_then(parse_rfc3339).map(round_reset)))
 }
 
 fn money(v: Option<&Value>) -> Option<(f64, Option<String>)> {
@@ -247,14 +240,14 @@ pub fn normalize(raw: &Value) -> Snapshot {
         if limits.iter().any(|w| w.key == key || w.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name))) {
             continue;
         }
-        limits.push(Limit {
-            key,
-            kind: "model".into(),
-            name: Some(name.to_string()),
-            window_ms: Some(7 * D),
-            utilization: l.get("percent").and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 100.0),
-            resets_at: l.get("resets_at").and_then(parse_rfc3339).map(round_reset),
-        });
+        limits.push(Limit::percent(
+            &key,
+            "model",
+            Some(name.to_string()),
+            Some(7 * D),
+            l.get("percent").and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 100.0),
+            l.get("resets_at").and_then(parse_rfc3339).map(round_reset),
+        ));
     }
     let rank = |l: &Limit| match l.kind.as_str() {
         "session" => 0,

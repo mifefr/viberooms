@@ -1,13 +1,17 @@
+<img src="server/web/favicon.svg" width="72" height="72" alt="">
+
 # VibeRooms
 
 **Combien de marge te reste-t-il sur tes abonnements IA ?** VibeRooms est un petit service auto-hébergé qui suit les
-quotas de tes abonnements Claude et ChatGPT, avec plusieurs comptes par service. Il affiche la marge restante avant la
+quotas de tes abonnements et clés API d'IA (Claude, ChatGPT, GitHub Copilot, OpenRouter, DeepSeek, API OpenAI et
+Anthropic…), avec plusieurs comptes par service. Tout autre service qui expose ses quotas en HTTP s'ajoute depuis le
+tableau de bord, sans code. Il affiche la marge restante avant la
 prochaine limite et l'heure de son reset. Il indique aussi si tu vas atteindre la limite au rythme actuel, et quel
 compte utiliser maintenant.
 
 [English](README.md)
 
-![Tableau de bord](docs/dashboard-dark.png)
+![Tableau de bord](docs/dashboard-light-fr.png)
 
 - **Tableau de bord** : pour chaque compte, la marge avant la prochaine limite, la session 5 h, la semaine, les
   limites par modèle, les crédits supplémentaires, un repère de rythme, une projection (« limite vers 19:10 à ce
@@ -16,8 +20,9 @@ compte utiliser maintenant.
 - **App barre de menus macOS** : une jauge par compte, un menu natif, des notifications à 80 %, 95 % et au reset.
 - **Barre d'état de Claude Code** : `Perso 20% ↻1h22 · sem 4% │ Boulot 31% dispo`.
 - **Intégration [Homepage](https://gethomepage.dev)** : un groupe de widgets, synchronisé automatiquement.
-- **Auto-hébergé** : un seul binaire Rust (≈ 7 Mo) avec SQLite, pensé pour un serveur à la maison joint par Tailscale.
-  Aucun cloud, aucune télémétrie.
+- **Auto-hébergé** : un seul binaire Rust (≈ 7 Mo) avec SQLite. Lance-le sur ton propre ordinateur (le serveur et l'app
+  visent `127.0.0.1:8790` par défaut), ou sur une machine toujours allumée jointe par Tailscale pour le suivre depuis
+  tous tes appareils, sans trou dans l'historique quand ton portable dort. Aucun cloud, aucune télémétrie.
 - Interface **français / anglais**.
 
 > [!WARNING]
@@ -28,14 +33,20 @@ compte utiliser maintenant.
 > usage : il n'envoie jamais de requête au modèle. Tu l'utilises à tes risques ; lis d'abord les conditions de tes
 > fournisseurs.
 
-## Fournisseurs pris en charge
+## Services pris en charge
 
-| Fournisseur | Outil | Ce qui est suivi | État |
+| Service | Ce qui est suivi | Connexion | État |
 |---|---|---|---|
-| Claude (Pro, Max, Team, Enterprise) | Claude Code | session 5 h, semaine, limites hebdo par modèle, crédits supplémentaires, répartition par usage | Stable |
-| ChatGPT (Plus, Pro, Team, Business…) | Codex | fenêtre 5 h, semaine, limites par modèle | Expérimental |
-| API Gemini (Google AI Studio) | — | quotas via Cloud Monitoring (API officielle) | Prévu |
-| Abonnements Gemini (AI Pro / Ultra) | Gemini CLI / Antigravity | — | Non pris en charge : Google a basculé les offres individuelles vers Antigravity, une CLI fermée dont l'API de quotas est réservée à son propre client |
+| Claude (Pro, Max, Team, Enterprise) | session 5 h, semaine, limites par modèle, crédits | OAuth | Stable |
+| ChatGPT (Plus, Pro, Team…), via Codex | fenêtre 5 h, semaine, limites par modèle | OAuth | Expérimental |
+| GitHub Copilot | requêtes premium ou crédits IA du mois | `gh auth token` | Expérimental |
+| Kimi Code, GLM Coding Plan | fenêtres 5 h et hebdo, quotas mensuels | clé du forfait | Expérimental |
+| OpenRouter, DeepSeek, Moonshot | crédits, plafond, solde | clé API | API documentée |
+| API xAI, Anthropic, OpenAI | crédits prépayés, dépenses du mois face au budget | clé de gestion / admin | API documentée |
+| **Tout le reste** | restant / utilisé / plafond / % / reset lus dans n'importe quel JSON | [connecteur personnalisé](README.md#custom-connectors) | — |
+
+Impossible aujourd'hui : **Google AI Pro/Ultra** (basculé vers Antigravity, fermé), **SuperGrok** et **Mistral Le
+Chat** (pas d'API). L'**API Gemini (AI Studio)** est prévue via Cloud Monitoring.
 
 ## Fonctionnement
 
@@ -51,20 +62,25 @@ restent sur le serveur, dans `accounts.json` (mode `0600`), et ne sont jamais en
 ```sh
 git clone https://github.com/mifefr/viberooms && cd viberooms
 cargo build --release -p viberooms
-VR_HOST=127.0.0.1,100.64.0.10 ./target/release/viberooms   # localhost + ton adresse Tailscale
+./target/release/viberooms
 ```
 
-Ouvre ensuite `http://<hôte>:8790`, puis clique sur **Ajouter un compte**.
+Ouvre ensuite `http://localhost:8790`, puis clique sur **Ajouter un compte**. Pour y accéder depuis tes autres
+appareils, écoute aussi sur une adresse privée : `VR_HOST=127.0.0.1,100.64.0.10` (localhost + ton adresse Tailscale).
 
 - **macOS (launchd)** : `VR_HOST=127.0.0.1,100.64.0.10 ./deploy/macos/install-server.sh`. Le script enregistre dans
   l'agent toutes les variables `VR_*` que tu as définies.
 - **Linux (systemd)** : voir [`deploy/linux/viberooms.service`](deploy/linux/viberooms.service).
-- **Docker** : `docker build -t viberooms . && docker run -d -p 8790:8790 -v viberooms:/data viberooms`.
+- **Docker** : `docker build -t viberooms . && docker run -d -p 127.0.0.1:8790:8790 -v viberooms:/data viberooms`.
 
 Les variables de configuration (`VR_HOST`, `VR_PORT`, `VR_PUBLIC_URL`, `VR_DATA_DIR`, `VR_LANG`, `VR_POLL_MS`,
 `VR_HOMEPAGE_*`, `VR_HOOK`, `VR_LOG`) sont décrites dans le [README anglais](README.md#configuration).
 
 ## Connecter un compte
+
+![Ajouter un compte](docs/add-account.png)
+
+**Abonnements (connexion)**
 
 1. Clique sur **Ajouter un compte**, choisis le service et donne-lui un nom.
 2. Clique sur **Ouvrir la page d'autorisation** et connecte-toi **avec le bon compte**. Pour un autre compte que celui
@@ -73,8 +89,14 @@ Les variables de configuration (`VR_HOST`, `VR_PORT`, `VR_PUBLIC_URL`, `VR_DATA_
    - Claude affiche un code (`xxxx#yyyy`) ;
    - ChatGPT redirige vers une page `http://localhost:1455/…` qui ne se charge pas : copie l'adresse complète.
 
+   La fenêtre valide d'elle-même dès que ce que tu colles a la bonne forme.
+
+**Clés API** : colle la clé (et les champs que certains services demandent, comme un ID d'équipe ou un budget
+mensuel), puis **Vérifier et ajouter**. Chaque carte renvoie vers la page où créer la clé. Pour un service absent de
+la liste, le **connecteur personnalisé** lit n'importe quelle adresse JSON ([format](README.md#custom-connectors)).
+
 Quand une session expire (après environ 4 semaines sans usage), la carte affiche **Reconnexion requise**. Reconnecte
-le compte depuis son menu.
+le compte depuis son panneau de détails.
 
 ## App barre de menus (macOS)
 
@@ -87,6 +109,11 @@ La configuration se trouve dans `~/Library/Application Support/VibeRooms/config.
 ```json
 { "server": "http://100.64.0.10:8790", "notifications": true, "lang": "auto", "switcher": false }
 ```
+
+Le menu affiche une ligne par compte, groupée par outil, avec un niveau en couleur (🟢 🟡 🔴) et la marge restante ; le
+détail (chaque limite, son reset, les crédits) est dans son sous-menu, avec un lien vers le compte dans le tableau de
+bord. La première ligne indique le compte à utiliser par outil. **Réglages** regroupe les notifications, **Ouvrir à la
+connexion** et la bascule de compte.
 
 **Barre d'état de Claude Code** : dans `~/.claude/settings.json`, ajoute
 `"statusLine": { "type": "command", "command": "'/Users/toi/Applications/VibeRooms.app/Contents/MacOS/viberooms-bar' --statusline", "refreshInterval": 30 }`.

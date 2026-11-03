@@ -1,8 +1,12 @@
+<img src="server/web/favicon.svg" width="72" height="72" alt="">
+
 # VibeRooms
 
 **How much room is left on your AI subscriptions?** VibeRooms is a small self-hosted service that tracks the usage
-limits of your Claude and ChatGPT subscriptions (several accounts each), shows the headroom left before the next
-limit, when it resets and whether you will hit it at the current pace, and tells you which account to use right now.
+limits of your AI subscriptions and API keys (Claude, ChatGPT, GitHub Copilot, OpenRouter, DeepSeek, OpenAI and
+Anthropic APIs…, several accounts each): headroom before the next limit, when it resets, whether you will hit it at
+the current pace, and which account to use right now. Anything else that exposes its quota over HTTP can be added
+from the dashboard, without code.
 
 [Français](README.fr.md)
 
@@ -14,7 +18,8 @@ limit, when it resets and whether you will hit it at the current pace, and tells
 - **macOS menu bar app**: one gauge per account, native menu, notifications at 80 % / 95 % / reset.
 - **Claude Code status line**: `Personal 20% ↻1h22 · wk 4% │ Work 31% left`.
 - **[Homepage](https://gethomepage.dev) integration**: a group of widgets, kept in sync automatically.
-- **Self-hosted**: one Rust binary (≈7 MB) with SQLite, made for a home server reached over Tailscale. No cloud, no telemetry.
+- **Self-hosted**: one Rust binary (≈7 MB) with SQLite. Run it on your own computer, or on an always-on home server
+  reached over Tailscale to follow it from every device. No cloud, no telemetry.
 - **English / French** user interface.
 
 > [!WARNING]
@@ -26,12 +31,24 @@ limit, when it resets and whether you will hit it at the current pace, and tells
 
 ## Supported providers
 
-| Provider | Tool | What is tracked | Status |
+| Service | What is tracked | How | Status |
 |---|---|---|---|
-| Claude (Pro, Max, Team, Enterprise) | Claude Code | 5-hour session, week, per-model weekly caps, extra-usage credits, usage split by surface | Stable |
-| ChatGPT (Plus, Pro, Team, Business…) | Codex | 5-hour window, week, per-model limits | Experimental |
-| Gemini API (Google AI Studio) | — | Quotas through Cloud Monitoring (official API) | Planned |
-| Gemini subscriptions (AI Pro / Ultra) | Gemini CLI / Antigravity | — | Not supported: Google moved individual plans to the closed-source Antigravity CLI, whose quota API is locked to its own client |
+| Claude (Pro, Max, Team, Enterprise) | 5-hour session, week, per-model weekly caps, extra credits | Sign in (OAuth, `user:profile` scope) | Stable |
+| ChatGPT (Plus, Pro, Team…), as used by Codex | 5-hour window, week, per-model limits | Sign in (OAuth) | Experimental |
+| GitHub Copilot | Premium requests or AI credits this month | `gh auth token` | Experimental (internal endpoint) |
+| Kimi Code | 5-hour window, week, monthly quota | Kimi Code key | Experimental (internal endpoint) |
+| GLM Coding Plan (Z.ai) | 5-hour and weekly token windows, monthly tool calls | Coding Plan key | Experimental (internal endpoint) |
+| OpenRouter | Key spending limit, today, this month; account credits | API key / Management key | Documented API |
+| DeepSeek | Prepaid balance | API key | Documented API |
+| Moonshot (Kimi API) | Pay-as-you-go balance | API key | Documented API |
+| xAI API (Grok) | Prepaid credits of a team | Management key + team ID | Documented API (ledger updated at cycle close) |
+| Anthropic API | Month-to-date spend, against an optional budget | Admin key | Documented API |
+| OpenAI API | Month-to-date spend, against the org spend limit | Admin key | Documented API |
+| **Anything else** | Remaining / used / limit / % / reset read from any JSON endpoint | [Custom connector](#custom-connectors) | — |
+
+Not possible today: **Google AI Pro/Ultra** (Google moved individual plans to the closed-source Antigravity CLI,
+whose quota API is locked to its client) and **SuperGrok / Mistral Le Chat** (no API). **Gemini API (AI Studio)**
+quotas are readable through Cloud Monitoring with a service account: planned.
 
 ## How it works
 
@@ -45,6 +62,9 @@ limit, when it resets and whether you will hit it at the current pace, and tells
                                         └──────────────────────────────┘
 ```
 
+Everything can also run on a single machine: the server and the menu bar app both default to `127.0.0.1:8790`. A
+separate, always-on server keeps the history complete while your laptop sleeps, and lets every device see the same data.
+
 Each account is connected **from the dashboard** with its own OAuth session (PKCE), requesting the narrowest scope
 available (`user:profile` for Claude). VibeRooms **never reuses the tokens of your CLIs**: refresh tokens rotate, and
 sharing them would log your Claude Code or Codex out. Tokens are stored on the server in `accounts.json` (mode
@@ -57,15 +77,16 @@ sharing them would log your Claude Code or Codex out. Tokens are stored on the s
 ```sh
 git clone https://github.com/mifefr/viberooms && cd viberooms
 cargo build --release -p viberooms
-VR_HOST=127.0.0.1,100.64.0.10 ./target/release/viberooms   # localhost + your Tailscale address
+./target/release/viberooms
 ```
 
-Then open `http://<host>:8790` and click **Add account**.
+Then open `http://localhost:8790` and click **Add account**. To reach it from your other devices, also listen on a
+private address: `VR_HOST=127.0.0.1,100.64.0.10` (localhost + your Tailscale address).
 
 - **macOS (launchd)**: `VR_HOST=127.0.0.1,100.64.0.10 ./deploy/macos/install-server.sh`. Every `VR_*` variable you set is
   saved into the agent.
 - **Linux (systemd)**: see [`deploy/linux/viberooms.service`](deploy/linux/viberooms.service).
-- **Docker**: `docker build -t viberooms . && docker run -d -p 8790:8790 -v viberooms:/data viberooms`.
+- **Docker**: `docker build -t viberooms . && docker run -d -p 127.0.0.1:8790:8790 -v viberooms:/data viberooms`.
 
 ### Configuration
 
@@ -86,6 +107,10 @@ Then open `http://<host>:8790` and click **Add account**.
 
 ## Connect accounts
 
+![Add an account](docs/add-account.png)
+
+**Subscriptions (sign in)**
+
 1. **Add account**, pick the service, give it a name.
 2. **Open the authorization page**. Sign in **with the right account**: for another account than the one in your
    browser, use a private window.
@@ -93,7 +118,15 @@ Then open `http://<host>:8790` and click **Add account**.
    - Claude shows a code (`xxxx#yyyy`);
    - ChatGPT redirects to a `http://localhost:1455/…` page that fails to load. Copy that full address.
 
-When a session expires (roughly 4 weeks without use), the card says **Sign-in required**: reconnect it from its menu.
+   The dialog submits as soon as what you paste looks right.
+
+**API keys**: paste the key (and the extra fields some services need, such as a team ID or a monthly budget), then
+**Check and add**. Each card in the dialog links to the page where the key is created.
+
+When a session expires (roughly 4 weeks without use), the card says **Sign-in required**: reconnect it from its
+details panel. API keys are checked with a read-only call before they are saved.
+
+Deep links: `/#account/<id>` opens an account, `/#add` or `/#add/<service>` the add dialog.
 
 ## Menu bar app (macOS)
 
@@ -107,8 +140,10 @@ Configuration lives in `~/Library/Application Support/VibeRooms/config.json`:
 { "server": "http://100.64.0.10:8790", "notifications": true, "lang": "auto", "switcher": false }
 ```
 
-**Open at login** is a menu item. The title shows the headroom of the account your local Claude Code is signed in
-with.
+The menu shows one line per account, grouped by tool, with a coloured level (🟢 🟡 🔴) and the headroom left; the
+details (every limit, reset time, extra credits) are in its submenu, along with a link to the account in the
+dashboard. The top line says which account to use now for each tool. **Settings** holds notifications, **Open at
+login** and account switching. The menu bar icon draws up to five gauges, Claude accounts first.
 
 ### Claude Code status line
 
@@ -136,6 +171,39 @@ Caveats:
 - Claude sessions already open keep the previous account until their token renews: restart them.
 - This touches Claude Code's private storage format, which can change.
 - Make sure switching accounts is compatible with your plan's terms.
+
+## Custom connectors
+
+**Add account → Custom connector** describes one HTTP call. Click *Call the endpoint*: the dashboard lists every
+numeric value found in the answer and you pick their role (remaining, used, limit, % used, % remaining, reset date).
+The description behind it is plain JSON, editable under *Advanced*:
+
+```json
+{
+  "name": "My provider",
+  "url": "https://api.example.com/v1/credits",
+  "headers": { "Authorization": "Bearer {{key}}" },
+  "limits": [
+    { "key": "credits", "label": "Credits", "kind": "balance",
+      "used": "/data/used", "limit": "/data/total", "unit": "USD" }
+  ]
+}
+```
+
+- **Paths** are JSON pointers. `*` matches every item (`/data/*/amount`, summed), `[type=X,unit=3]` keeps the array
+  items whose fields match, numbers given as strings are accepted.
+- **Limit fields**: `used`, `limit`, `remaining`, `percent`, `percentRemaining` (any two are enough), `resetsAt`
+  (RFC 3339, `YYYY-MM-DD` or unix time) or `reset: "monthly" | "daily"`, `kind` (`session`, `day`, `week`, `month`,
+  `balance`), `unit` or `unitPath`, `scale` / `usedScale` / `limitScale` / `remainingScale` (e.g. `0.01` for cents),
+  `limitValue` (a template such as `{{field.budget}}`), `skipIf` (hide when a flag is true), `windowMs`.
+- **Several calls**: `"requests": [{ "id": "costs", "url": "…" }, { "id": "limit", "url": "…", "optional": true }]`,
+  then paths start with the id (`/costs/data/*/results/*/amount`).
+- **Templates** in URLs, headers and bodies: `{{key}}`, `{{field.<id>}}`, `{{now}}`, `{{now_unix}}`, `{{today}}`,
+  `{{month_start}}`, `{{month_start_unix}}` (UTC).
+
+The built-in services are written the same way in
+[`server/src/providers/presets.json`](server/src/providers/presets.json): adding one is a pull request with a JSON
+entry and a test using a sample answer. Try yours without rebuilding: `VR_PRESETS_FILE=my-presets.json viberooms`.
 
 ## Homepage
 

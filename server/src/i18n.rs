@@ -27,6 +27,10 @@ pub fn t(lang: Lang, key: &str) -> &'static str {
         (En, "week") => "Week",
         (Fr, "day") => "Jour",
         (En, "day") => "Day",
+        (Fr, "month") => "Mois",
+        (En, "month") => "Month",
+        (Fr, "balance") => "Solde",
+        (En, "balance") => "Balance",
         (Fr, "free") => "libre",
         (En, "free") => "free",
         (Fr, "use_now") => "Compte à utiliser maintenant",
@@ -66,8 +70,23 @@ pub fn t(lang: Lang, key: &str) -> &'static str {
     }
 }
 
+/// Preset names are bilingual ("Today|Aujourd'hui"): picks the right half.
+pub fn localized(lang: Lang, s: &str) -> &str {
+    match s.split_once('|') {
+        Some((en, fr)) => {
+            if lang == Lang::Fr && !fr.is_empty() {
+                fr
+            } else {
+                en
+            }
+        }
+        None => s,
+    }
+}
+
 /// Human label of a limit, e.g. "Session", "Week", "Week · Opus".
 pub fn limit_label(lang: Lang, kind: &str, name: Option<&str>, window_ms: Option<i64>) -> String {
+    let name = name.map(|n| localized(lang, n));
     match (kind, name) {
         ("session", _) => {
             let hours = window_ms.map(|ms| ms / 3_600_000).filter(|h| *h > 0);
@@ -77,8 +96,11 @@ pub fn limit_label(lang: Lang, kind: &str, name: Option<&str>, window_ms: Option
                 _ => t(lang, "session").into(),
             }
         }
-        ("week", _) => t(lang, "week").into(),
+        ("week", None) => t(lang, "week").into(),
         ("day", None) => t(lang, "day").into(),
+        ("month", None) => t(lang, "month").into(),
+        ("balance", None) => t(lang, "balance").into(),
+        ("week" | "day" | "month" | "balance", Some(n)) => n.to_string(),
         (_, Some(n)) => {
             let weekly = window_ms.is_some_and(|ms| ms >= 6 * 86_400_000);
             if weekly {
@@ -114,6 +136,8 @@ mod tests {
         assert_eq!(limit_label(Lang::Fr, "session", None, Some(5 * 3_600_000)), "Session 5 h");
         assert_eq!(limit_label(Lang::En, "model", Some("Opus"), Some(7 * 86_400_000)), "Week · Opus");
         assert_eq!(limit_label(Lang::Fr, "model", Some("gemini-2.5-pro"), Some(86_400_000)), "gemini-2.5-pro");
+        assert_eq!(limit_label(Lang::Fr, "day", Some("Today|Aujourd'hui"), None), "Aujourd'hui");
+        assert_eq!(limit_label(Lang::En, "balance", None, None), "Balance");
     }
 
     #[test]

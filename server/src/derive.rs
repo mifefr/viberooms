@@ -29,6 +29,13 @@ pub struct Window {
     pub rate_source: Option<&'static str>,
     pub eta_full: Option<i64>,
     pub hits_before_reset: Option<bool>,
+    /// Absolute amounts (credits, money, requests) when the provider reports them.
+    pub used: Option<f64>,
+    pub limit: Option<f64>,
+    pub remaining: Option<f64>,
+    pub unit: Option<String>,
+    /// False for a bare balance: no gauge, no percentage-based headroom.
+    pub has_percent: bool,
 }
 
 pub fn level(u: f64) -> &'static str {
@@ -75,7 +82,7 @@ pub fn compute(l: &Limit, cycle_points: &[(i64, f64)], now: i64) -> Window {
         window_ms: l.window_ms,
         utilization,
         resets_at: l.resets_at,
-        level: level(utilization),
+        level: if l.has_percent { level(utilization) } else { "none" },
         idle: false,
         elapsed: None,
         remaining_ms: None,
@@ -84,7 +91,15 @@ pub fn compute(l: &Limit, cycle_points: &[(i64, f64)], now: i64) -> Window {
         rate_source: None,
         eta_full: None,
         hits_before_reset: None,
+        used: l.used,
+        limit: l.limit,
+        remaining: l.remaining,
+        unit: l.unit.clone(),
+        has_percent: l.has_percent,
     };
+    if !l.has_percent {
+        return w; // a balance has no pace nor projection
+    }
     let (Some(reset), Some(len)) = (l.resets_at, l.window_ms) else {
         w.idle = utilization == 0.0;
         return w;
@@ -147,9 +162,14 @@ pub fn derive(store: &Store, account_id: &str, snap: &Snapshot, now: i64) -> Vec
         .collect()
 }
 
-/// Headroom = what is left before the first session/week/day limit is hit.
+/// Headroom = what is left before the first session/day/week/month limit is hit. Prepaid balances
+/// with a known ceiling count too; bare balances (no percentage) do not.
 pub fn headroom(windows: &[Window]) -> Option<f64> {
-    windows.iter().filter(|w| matches!(w.kind.as_str(), "session" | "week" | "day")).map(|w| 100.0 - w.utilization).reduce(f64::min)
+    windows
+        .iter()
+        .filter(|w| w.has_percent && matches!(w.kind.as_str(), "session" | "week" | "day" | "month" | "balance"))
+        .map(|w| 100.0 - w.utilization)
+        .reduce(f64::min)
 }
 
 #[cfg(test)]
@@ -159,7 +179,7 @@ mod tests {
     const MIN: i64 = 60_000;
 
     fn limit(kind: &str, util: f64, reset: i64, len: i64) -> Limit {
-        Limit { key: "k".into(), kind: kind.into(), name: None, window_ms: Some(len), utilization: util, resets_at: Some(reset) }
+        Limit::percent("k", kind, None, Some(len), util, Some(reset))
     }
 
     #[test]
@@ -203,14 +223,7 @@ mod tests {
 
     #[test]
     fn idle_window_without_reset() {
-        let l = Limit {
-            key: "five_hour".into(),
-            kind: "session".into(),
-            name: None,
-            window_ms: Some(5 * 60 * MIN),
-            utilization: 0.0,
-            resets_at: None,
-        };
+        let l = Limit::percent("five_hour", "session", None, Some(5 * 60 * MIN), 0.0, None);
         let w = compute(&l, &[], 0);
         assert!(w.idle);
         assert_eq!(w.pace, None);

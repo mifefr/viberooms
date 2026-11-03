@@ -173,14 +173,31 @@ fn i(v: &Value, k: &str) -> Option<i64> {
     v.get(k).and_then(Value::as_i64)
 }
 
+/// Preset names are bilingual ("Today|Aujourd'hui"): picks the right half.
+fn loc(n: &str) -> &str {
+    match n.split_once('|') {
+        Some((en, frn)) => {
+            if fr() && !frn.is_empty() {
+                frn
+            } else {
+                en
+            }
+        }
+        None => n,
+    }
+}
+
 /// Short name of a limit: Session, Week, Day, or "Wk Opus" for a weekly per-model cap.
 fn wname(w: &Value) -> String {
     match s(w, "kind") {
         "session" => "Session".into(),
+        "week" | "month" | "balance" | "day" if !s(w, "name").is_empty() => loc(s(w, "name")).to_string(),
         "week" => l("Semaine", "Week").into(),
         "day" => l("Jour", "Day").into(),
+        "month" => l("Mois", "Month").into(),
+        "balance" => l("Solde", "Balance").into(),
         _ => {
-            let n = s(w, "name");
+            let n = loc(s(w, "name"));
             let weekly = i(w, "windowMs").is_some_and(|ms| ms >= 6 * 86_400_000);
             if weekly {
                 format!("{} {n}", l("Sem.", "Wk"))
@@ -194,16 +211,33 @@ fn wname(w: &Value) -> String {
 fn window_line(w: &Value) -> String {
     let used = f(w, "utilization").unwrap_or(0.0);
     let name = wname(w);
+    let unit = s(w, "unit");
+    if !w.get("hasPercent").and_then(Value::as_bool).unwrap_or(true) {
+        // Balance or counter without a ceiling: show the amount.
+        let mut line = match (f(w, "remaining"), f(w, "used")) {
+            (Some(r), _) => format!("{name} · {} {}", fmt_amount(r, unit), l("dispo", "left")),
+            (None, Some(u)) => format!("{name} · {} {}", fmt_amount(u, unit), l("utilisé", "used")),
+            _ => name.clone(),
+        };
+        if let Some(reset) = i(w, "resetsAt") {
+            line.push_str(&format!(" · reset {}", fmt_clock(reset)));
+        }
+        return line;
+    }
+    let amounts = match (f(w, "used"), f(w, "limit")) {
+        (Some(u), Some(li)) => format!(" ({} / {})", fmt_amount(u, unit), fmt_amount(li, unit)),
+        _ => String::new(),
+    };
     let Some(reset) = i(w, "resetsAt") else {
-        return format!("{name} · {}", l("libre", "free"));
+        return if used > 0.0 { format!("{name} {used:.0} %{amounts}") } else { format!("{name} · {}", l("libre", "free")) };
     };
     if used >= 100.0 {
         return format!("{name} · {} {}", l("bloqué jusqu'à", "blocked until"), fmt_clock(reset));
     }
     let mut line = if s(w, "kind") == "session" {
-        format!("{name} {used:.0} % · {} {} ({})", l("reset dans", "resets in"), fmt_dur(reset - now_ms()), fmt_clock(reset))
+        format!("{name} {used:.0} %{amounts} · {} {} ({})", l("reset dans", "resets in"), fmt_dur(reset - now_ms()), fmt_clock(reset))
     } else {
-        format!("{name} {used:.0} % · reset {}", fmt_clock(reset))
+        format!("{name} {used:.0} %{amounts} · reset {}", fmt_clock(reset))
     };
     if w.get("hitsBeforeReset").and_then(Value::as_bool) == Some(true) {
         if let Some(eta) = i(w, "etaFull") {
@@ -398,13 +432,22 @@ struct Fixed {
     quit: MenuItem,
 }
 
+/// Menu items of one account, kept to update them in place (the menu may be open).
+struct AccountItems {
+    id: String,
+    sub: Submenu,
+    lines: Vec<(IconMenuItem, String)>, // (item, window key)
+    extra: Option<MenuItem>,
+    open: MenuItem,
+    use_here: Option<(CheckMenuItem, String)>, // (item, vault key)
+}
+
 struct Ui {
     cfg: Config,
     tray: Option<TrayIcon>,
     fixed: Option<Fixed>,
     signature: String,
-    lines: Vec<(IconMenuItem, String, Option<String>)>, // (item, account id, window key or None = header)
-    extras: Vec<(MenuItem, String)>,
+    items: Vec<AccountItems>,
     state: Option<Value>,
     last_ok: Option<i64>,
     last_err: Option<String>,
@@ -412,7 +455,6 @@ struct Ui {
     tx: mpsc::Sender<Cmd>,
     sw_tx: mpsc::Sender<switcher::SwCmd>,
     sw: switcher::Snapshot,
-    sw_sub: Option<Submenu>,
     sw_items: Vec<(CheckMenuItem, String)>,
     sw_add: Option<MenuItem>,
     sw_forget: Vec<(MenuItem, String)>,
@@ -423,6 +465,65 @@ struct Ui {
 
 fn icon(c: draw::Canvas) -> Option<tray_icon::menu::Icon> {
     tray_icon::menu::Icon::from_rgba(c.px, c.w, c.h).ok()
+}
+
+/// "12,40 $", "23,10 CNY", "90 req".
+fn fmt_amount(v: f64, unit: &str) -> String {
+    match unit {
+        "USD" | "EUR" | "GBP" | "CNY" | "JPY" => fmt_money(v, unit),
+        "" => format!("{v:.0}"),
+        u => {
+            let n = if v.abs() >= 100.0 { format!("{v:.0}") } else { format!("{v:.2}") };
+            format!("{} {u}", if fr() { n.replace('.', ",") } else { n })
+        }
+    }
+}
+
+fn has_pct(w: &Value) -> bool {
+    w.get("hasPercent").and_then(Value::as_bool).unwrap_or(true)
+}
+
+fn sorted_windows(a: &Value) -> Vec<Value> {
+    let rank = |k: &str| match k {
+        "session" => 0,
+        "day" => 1,
+        "week" => 2,
+        "month" => 3,
+        "balance" => 4,
+        "model" => 5,
+        _ => 6,
+    };
+    let mut ws: Vec<Value> = a.get("windows").and_then(Value::as_array).cloned().unwrap_or_default();
+    ws.sort_by_key(|w| (!has_pct(w), rank(s(w, "kind"))));
+    ws
+}
+
+/// Main value of an account: headroom, else its main balance.
+fn headline(a: &Value) -> String {
+    if let Some(h) = f(a, "headroom") {
+        return format!("{h:.0} % {}", l("dispo", "left"));
+    }
+    sorted_windows(a)
+        .iter()
+        .find_map(|w| {
+            f(w, "remaining")
+                .map(|r| fmt_amount(r, s(w, "unit")))
+                .or_else(|| f(w, "used").map(|u| format!("{} {}", fmt_amount(u, s(w, "unit")), l("utilisé", "used"))))
+        })
+        .unwrap_or_else(|| "—".into())
+}
+
+/// Coloured dot for the account line: the menu cannot colour text, emoji carry the level.
+fn dot(a: &Value) -> &'static str {
+    if matches!(s(a, "status"), "reauth" | "error") {
+        return "⚠️";
+    }
+    match f(a, "headroom") {
+        Some(h) if h >= 40.0 => "🟢",
+        Some(h) if h >= 15.0 => "🟡",
+        Some(_) => "🔴",
+        None => "⚪",
+    }
 }
 
 impl Ui {
@@ -440,53 +541,63 @@ impl Ui {
             );
         }
         if accounts.is_empty() {
-            return l("Aucun compte connecté — ajoute-les depuis le tableau de bord", "No account connected — add them from the dashboard")
-                .into();
+            return l("Aucun compte — ajoute-les depuis le tableau de bord", "No account — add them from the dashboard").into();
         }
         let recs: Vec<String> = accounts
             .iter()
             .filter(|a| a.get("recommended").and_then(Value::as_bool) == Some(true))
-            .map(|r| format!("{} : {} ({:.0} % {})", s(r, "tool"), s(r, "label"), f(r, "headroom").unwrap_or(0.0), l("dispo", "left")))
+            .map(|r| format!("{} → {} ({:.0} %)", s(r, "tool"), s(r, "label"), f(r, "headroom").unwrap_or(0.0)))
             .collect();
         if recs.is_empty() {
             "VibeRooms".into()
         } else {
-            format!("★ {} — {}", l("À utiliser", "Use now"), recs.join("  ·  "))
+            format!("★ {}", recs.join("   ·   "))
         }
     }
 
     fn account_title(a: &Value, local: bool) -> String {
-        let mut t = format!("{} — {} {}", s(a, "label"), s(a, "providerName"), s(a, "plan"));
-        match f(a, "headroom") {
-            Some(h) => t.push_str(&format!(" · {h:.0} % {}", l("dispo", "left"))),
-            None => t.push_str(l(" · en attente", " · pending")),
+        let mut t = format!("{} {}   {}", dot(a), s(a, "label"), headline(a));
+        if a.get("recommended").and_then(Value::as_bool) == Some(true) {
+            t.push_str(" ★");
         }
         match s(a, "status") {
-            "reauth" => t.push_str(l(" · ⚠︎ reconnexion requise", " · ⚠︎ sign-in required")),
-            "error" => t.push_str(l(" · ⚠︎ erreur", " · ⚠︎ error")),
-            "stale" | "degraded" => t.push_str(l(" · données en cache", " · cached data")),
-            _ => {}
+            "reauth" => t.push_str(l(" · reconnexion requise", " · sign-in required")),
+            "error" => t.push_str(l(" · erreur", " · error")),
+            "stale" | "degraded" => t.push_str(l(" · en cache", " · cached")),
+            _ => {
+                let hot = sorted_windows(a).into_iter().find(|w| {
+                    has_pct(w)
+                        && w.get("hitsBeforeReset").and_then(Value::as_bool) == Some(true)
+                        && matches!(s(w, "kind"), "session" | "day" | "week" | "month")
+                });
+                if let Some(eta) = hot.as_ref().and_then(|w| i(w, "etaFull")) {
+                    t.push_str(&format!("   ⚠︎ {} ~{}", l("limite", "limit"), fmt_clock(eta)));
+                }
+            }
         }
         if local {
-            t.push_str(l("   ● ce Mac", "   ● this Mac"));
+            t.push_str(l("   · ce Mac", "   · this Mac"));
         }
         t
     }
 
     /// Label and headroom of a vault entry, from the matching server-side account.
     fn entry_info(e: &switcher::Entry, accounts: &[Value]) -> (String, Option<f64>) {
-        let acc = accounts.iter().find(|a| {
+        match Self::entry_account(e, accounts) {
+            Some(a) => (s(a, "label").to_string(), f(a, "headroom")),
+            None => (format!("{}{}", e.email, e.org_name.as_ref().map(|o| format!(" ({o})")).unwrap_or_default()), None),
+        }
+    }
+
+    fn entry_account<'a>(e: &switcher::Entry, accounts: &'a [Value]) -> Option<&'a Value> {
+        accounts.iter().find(|a| {
             s(a, "provider") == "claude"
                 && s(a, "email").eq_ignore_ascii_case(&e.email)
                 && match (a.get("orgUuid").and_then(Value::as_str), e.org_uuid.as_deref()) {
                     (Some(x), Some(y)) => x == y,
                     _ => true,
                 }
-        });
-        match acc {
-            Some(a) => (s(a, "label").to_string(), f(a, "headroom")),
-            None => (format!("{}{}", e.email, e.org_name.as_ref().map(|o| format!(" ({o})")).unwrap_or_default()), None),
-        }
+        })
     }
 
     fn entry_text(e: &switcher::Entry, accounts: &[Value]) -> String {
@@ -511,53 +622,36 @@ impl Ui {
         }
     }
 
-    fn switch_title(&self, accounts: &[Value]) -> String {
-        let active = self.sw.active.as_ref().and_then(|k| self.sw.entries.iter().find(|e| &e.key == k));
-        let name = match active {
-            Some(e) => Self::entry_info(e, accounts).0,
-            None => l("compte non identifié", "unidentified account").into(),
-        };
-        let suffix = if self.sw.enrolling { l(" · ajout en cours…", " · adding…") } else { "" };
-        format!("{} {name}{suffix}", l("Claude Code sur ce Mac :", "Claude Code on this Mac:"))
-    }
-
     /// Recommended Claude account present in the vault but not active → switch shortcut.
     fn shortcut_target(&self, accounts: &[Value]) -> Option<(String, String)> {
         if !self.cfg.switcher {
             return None;
         }
         let rec = accounts.iter().find(|a| s(a, "provider") == "claude" && a.get("recommended").and_then(Value::as_bool) == Some(true))?;
-        let e = self.sw.entries.iter().find(|e| {
-            s(rec, "email").eq_ignore_ascii_case(&e.email)
-                && rec.get("orgUuid").and_then(Value::as_str).is_none_or(|o| Some(o) == e.org_uuid.as_deref())
-        })?;
+        let e = self.sw.entries.iter().find(|e| Self::entry_account(e, std::slice::from_ref(rec)).is_some())?;
         if self.sw.active.as_deref() == Some(e.key.as_str()) || e.expired() {
             return None;
         }
         Some((e.key.clone(), s(rec, "label").to_string()))
     }
 
-    fn full_signature(&self, accounts: &[Value]) -> String {
-        format!(
-            "{}#{}#{:?}#{}#{:?}",
-            Self::signature(accounts),
-            self.sw.entries.iter().map(|e| format!("{}:{}", e.key, e.expired())).collect::<Vec<_>>().join(","),
-            self.sw.active,
-            self.sw.enrolling,
-            self.shortcut_target(accounts).map(|t| t.0),
-        )
-    }
-
-    fn signature(accounts: &[Value]) -> String {
-        accounts
+    fn signature(&self, accounts: &[Value]) -> String {
+        let acc = accounts
             .iter()
             .map(|a| {
                 let keys: Vec<&str> = a.get("windows").and_then(Value::as_array).into_iter().flatten().map(|w| s(w, "key")).collect();
                 let extra = a.pointer("/extra/enabled").and_then(Value::as_bool).unwrap_or(false);
-                format!("{}[{}]{}", s(a, "id"), keys.join(","), extra)
+                format!("{}:{}[{}]{}", s(a, "id"), s(a, "tool"), keys.join(","), extra)
             })
             .collect::<Vec<_>>()
-            .join("|")
+            .join("|");
+        format!(
+            "{acc}#{}#{}#{}#{:?}",
+            self.sw.entries.iter().map(|e| format!("{}:{}", e.key, e.expired())).collect::<Vec<_>>().join(","),
+            self.sw.enrolling,
+            self.cfg.switcher,
+            self.shortcut_target(accounts).map(|t| t.0),
+        )
     }
 
     fn extra_text(a: &Value) -> String {
@@ -566,6 +660,22 @@ impl Ui {
         let used = f(&e, "used").map(|v| fmt_money(v, cur)).unwrap_or_else(|| "—".into());
         let limit = f(&e, "limit").map(|v| fmt_money(v, cur)).unwrap_or_else(|| l("illimité", "unlimited").into());
         format!("{} {used} / {limit}", l("Crédits supplémentaires :", "Extra usage credits:"))
+    }
+
+    fn line_icon(w: &Value) -> Option<tray_icon::menu::Icon> {
+        if !has_pct(w) {
+            return None;
+        }
+        let used = f(w, "utilization").unwrap_or(0.0);
+        icon(draw::menu_bar(used, draw::level_color(used)))
+    }
+
+    fn vault_key_for(&self, a: &Value) -> Option<(String, bool)> {
+        if !self.cfg.switcher || s(a, "provider") != "claude" {
+            return None;
+        }
+        let e = self.sw.entries.iter().find(|e| Self::entry_account(e, std::slice::from_ref(a)).is_some())?;
+        Some((e.key.clone(), self.sw.active.as_deref() == Some(e.key.as_str())))
     }
 
     fn rebuild(&mut self) {
@@ -587,37 +697,82 @@ impl Ui {
             quit: MenuItem::new(l("Quitter VibeRooms", "Quit VibeRooms"), true, None),
         };
         let _ = menu.append(&fx.header);
-
-        // Switching the Claude Code account of this Mac (experimental, opt-in).
-        self.sw_items.clear();
-        self.sw_forget.clear();
         self.sw_shortcut = None;
-        self.sw_sub = None;
-        self.sw_add = None;
-        self.sw_info = None;
         if let Some((key, label)) = self.shortcut_target(&accounts) {
             let item = MenuItem::new(
-                if fr() {
-                    format!("⇄ Passer Claude Code sur {label} (★ recommandé)")
-                } else {
-                    format!("⇄ Switch Claude Code to {label} (★ best)")
-                },
+                if fr() { format!("⇄ Passer Claude Code sur {label}") } else { format!("⇄ Switch Claude Code to {label}") },
                 true,
                 None,
             );
             let _ = menu.append(&item);
             self.sw_shortcut = Some((item, key));
         }
+        let _ = menu.append(&PredefinedMenuItem::separator());
+
+        // One line per account, grouped by tool; details in a submenu.
+        self.items.clear();
+        let mut tools: Vec<&str> = vec![];
+        for a in &accounts {
+            if !tools.contains(&s(a, "tool")) {
+                tools.push(s(a, "tool"));
+            }
+        }
+        for tool in &tools {
+            if tools.len() > 1 {
+                let _ = menu.append(&MenuItem::new(tool.to_uppercase(), false, None));
+            }
+            for a in accounts.iter().filter(|a| s(a, "tool") == *tool) {
+                let id = s(a, "id").to_string();
+                let sub = Submenu::new(Self::account_title(a, is_local(a, &local)), true);
+                let mut lines = vec![];
+                for w in sorted_windows(a) {
+                    let item = IconMenuItem::new(window_line(&w), true, Self::line_icon(&w), None);
+                    let _ = sub.append(&item);
+                    lines.push((item, s(&w, "key").to_string()));
+                }
+                let extra = (a.pointer("/extra/enabled").and_then(Value::as_bool) == Some(true)).then(|| {
+                    let item = MenuItem::new(Self::extra_text(a), true, None);
+                    let _ = sub.append(&item);
+                    item
+                });
+                let _ = sub.append(&PredefinedMenuItem::separator());
+                let open = MenuItem::new(l("Ouvrir dans le tableau de bord", "Open in the dashboard"), true, None);
+                let _ = sub.append(&open);
+                let use_here = self.vault_key_for(a).map(|(key, active)| {
+                    let item =
+                        CheckMenuItem::new(l("Utiliser sur ce Mac (Claude Code)", "Use on this Mac (Claude Code)"), true, active, None);
+                    let _ = sub.append(&item);
+                    (item, key)
+                });
+                let _ = menu.append(&sub);
+                self.items.push(AccountItems { id, sub, lines, extra, open, use_here });
+            }
+        }
+        if !accounts.is_empty() {
+            let _ = menu.append(&PredefinedMenuItem::separator());
+        }
+        let _ = menu.append(&fx.open);
+        let _ = menu.append(&fx.refresh);
+
+        // Settings: notifications, login item, Claude Code switching (experimental).
+        let settings = Submenu::new(l("Réglages", "Settings"), true);
+        let _ = settings.append(&fx.notif);
+        let _ = settings.append(&fx.login);
+        self.sw_items.clear();
+        self.sw_forget.clear();
+        self.sw_add = None;
+        self.sw_info = None;
         if self.cfg.switcher {
-            let sub = Submenu::new(self.switch_title(&accounts), true);
+            let _ = settings.append(&PredefinedMenuItem::separator());
+            let sw = Submenu::new(l("Compte Claude Code de ce Mac", "Claude Code account of this Mac"), true);
             for e in &self.sw.entries {
                 let active = self.sw.active.as_deref() == Some(e.key.as_str());
                 let item = CheckMenuItem::new(Self::entry_text(e, &accounts), !e.expired() || active, active, None);
-                let _ = sub.append(&item);
+                let _ = sw.append(&item);
                 self.sw_items.push((item, e.key.clone()));
             }
             if !self.sw.entries.is_empty() {
-                let _ = sub.append(&PredefinedMenuItem::separator());
+                let _ = sw.append(&PredefinedMenuItem::separator());
             }
             let add = MenuItem::new(
                 if self.sw.enrolling {
@@ -628,7 +783,7 @@ impl Ui {
                 !self.sw.enrolling,
                 None,
             );
-            let _ = sub.append(&add);
+            let _ = sw.append(&add);
             let removable: Vec<&switcher::Entry> =
                 self.sw.entries.iter().filter(|e| self.sw.active.as_deref() != Some(e.key.as_str())).collect();
             if !removable.is_empty() {
@@ -638,57 +793,16 @@ impl Ui {
                     let _ = forget.append(&item);
                     self.sw_forget.push((item, e.key.clone()));
                 }
-                let _ = sub.append(&forget);
+                let _ = sw.append(&forget);
             }
-            let _ = sub.append(&PredefinedMenuItem::separator());
+            let _ = sw.append(&PredefinedMenuItem::separator());
             let info = MenuItem::new(Self::sessions_text(self.sw.open_sessions), false, None);
-            let _ = sub.append(&info);
+            let _ = sw.append(&info);
             self.sw_info = Some(info);
-            let _ = menu.append(&sub);
-            self.sw_sub = Some(sub);
             self.sw_add = Some(add);
+            let _ = settings.append(&sw);
         }
-
-        let _ = menu.append(&PredefinedMenuItem::separator());
-        self.lines.clear();
-        self.extras.clear();
-        // Accounts grouped by tool (Claude Code, Codex…), in the server order.
-        let mut tools: Vec<&str> = vec![];
-        for a in &accounts {
-            if !tools.contains(&s(a, "tool")) {
-                tools.push(s(a, "tool"));
-            }
-        }
-        let grouped: Vec<&Value> = tools.iter().flat_map(|t| accounts.iter().filter(move |a| s(a, "tool") == *t)).collect();
-        let mut current_tool = "";
-        for a in grouped {
-            if tools.len() > 1 && s(a, "tool") != current_tool {
-                current_tool = s(a, "tool");
-                let _ = menu.append(&MenuItem::new(current_tool.to_uppercase(), false, None));
-            }
-            let id = s(a, "id").to_string();
-            let color = draw::account_color(s(a, "color"));
-            let head = IconMenuItem::new(Self::account_title(a, is_local(a, &local)), true, icon(draw::swatch(color)), None);
-            let _ = menu.append(&head);
-            self.lines.push((head, id.clone(), None));
-            for w in a.get("windows").and_then(Value::as_array).into_iter().flatten() {
-                let used = f(w, "utilization").unwrap_or(0.0);
-                let item = IconMenuItem::new(window_line(w), true, icon(draw::menu_bar(used, draw::level_color(used))), None);
-                let _ = menu.append(&item);
-                self.lines.push((item, id.clone(), Some(s(w, "key").to_string())));
-            }
-            if a.pointer("/extra/enabled").and_then(Value::as_bool) == Some(true) {
-                let item = MenuItem::new(Self::extra_text(a), true, None);
-                let _ = menu.append(&item);
-                self.extras.push((item, id.clone()));
-            }
-            let _ = menu.append(&PredefinedMenuItem::separator());
-        }
-        let _ = menu.append(&fx.open);
-        let _ = menu.append(&fx.refresh);
-        let _ = menu.append(&PredefinedMenuItem::separator());
-        let _ = menu.append(&fx.notif);
-        let _ = menu.append(&fx.login);
+        let _ = menu.append(&settings);
         let _ = menu.append(&PredefinedMenuItem::separator());
         let _ = menu.append(&fx.updated);
         let _ = menu.append(&fx.quit);
@@ -696,18 +810,34 @@ impl Ui {
             tray.set_menu(Some(Box::new(menu)));
         }
         self.fixed = Some(fx);
-        self.signature = self.full_signature(&accounts);
+        self.signature = self.signature(&accounts);
         self.refresh_texts();
     }
 
-    /// In-place update (the menu may be open): texts, gauges, icon and title.
+    /// In-place update (the menu may be open): texts, gauges, check marks, icon and title.
     fn refresh_texts(&mut self) {
         let accounts = self.accounts();
-        if self.full_signature(&accounts) != self.signature {
+        if self.signature(&accounts) != self.signature {
             return self.rebuild();
         }
-        if let Some(sub) = &self.sw_sub {
-            sub.set_text(self.switch_title(&accounts));
+        let local = local_account();
+        let by_id: HashMap<&str, &Value> = accounts.iter().map(|a| (s(a, "id"), a)).collect();
+        for it in &self.items {
+            let Some(a) = by_id.get(it.id.as_str()) else { continue };
+            it.sub.set_text(Self::account_title(a, is_local(a, &local)));
+            let ws = sorted_windows(a);
+            for (item, key) in &it.lines {
+                if let Some(w) = ws.iter().find(|w| s(w, "key") == key) {
+                    item.set_text(window_line(w));
+                    item.set_icon(Self::line_icon(w));
+                }
+            }
+            if let Some(e) = &it.extra {
+                e.set_text(Self::extra_text(a));
+            }
+            if let Some((item, key)) = &it.use_here {
+                item.set_checked(self.sw.active.as_deref() == Some(key.as_str()));
+            }
         }
         if let Some(info) = &self.sw_info {
             info.set_text(Self::sessions_text(self.sw.open_sessions));
@@ -717,26 +847,6 @@ impl Ui {
                 item.set_text(Self::entry_text(e, &accounts));
             }
             item.set_checked(self.sw.active.as_deref() == Some(key.as_str()));
-        }
-        let local = local_account();
-        let by_id: HashMap<&str, &Value> = accounts.iter().map(|a| (s(a, "id"), a)).collect();
-        for (item, id, key) in &self.lines {
-            let Some(a) = by_id.get(id.as_str()) else { continue };
-            match key {
-                None => item.set_text(Self::account_title(a, is_local(a, &local))),
-                Some(k) => {
-                    if let Some(w) = a.get("windows").and_then(Value::as_array).and_then(|ws| ws.iter().find(|w| s(w, "key") == k)) {
-                        let used = f(w, "utilization").unwrap_or(0.0);
-                        item.set_text(window_line(w));
-                        item.set_icon(icon(draw::menu_bar(used, draw::level_color(used))));
-                    }
-                }
-            }
-        }
-        for (item, id) in &self.extras {
-            if let Some(a) = by_id.get(id.as_str()) {
-                item.set_text(Self::extra_text(a));
-            }
         }
         if let Some(fx) = &self.fixed {
             fx.header.set_text(self.header_text(&accounts));
@@ -754,18 +864,15 @@ impl Ui {
             });
         }
 
-        // Icon: one column per account (headroom), coloured by usage.
-        let gauges: Vec<(f64, f64, bool)> = accounts
+        // Icon: one column per account with a known headroom (Claude first, five at most).
+        let mut gauged: Vec<&Value> =
+            accounts.iter().filter(|a| f(a, "headroom").is_some() || matches!(s(a, "status"), "reauth" | "error")).collect();
+        gauged.sort_by_key(|a| s(a, "provider") != "claude");
+        let gauges: Vec<(f64, f64, bool)> = gauged
             .iter()
+            .take(5)
             .map(|a| {
-                let used = a
-                    .get("windows")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter(|w| matches!(s(w, "kind"), "session" | "week"))
-                    .filter_map(|w| f(w, "utilization"))
-                    .fold(0.0, f64::max);
+                let used = 100.0 - f(a, "headroom").unwrap_or(0.0);
                 let err = matches!(s(a, "status"), "reauth" | "error" | "pending") || f(a, "headroom").is_none();
                 (f(a, "headroom").unwrap_or(0.0), used, err)
             })
@@ -778,19 +885,9 @@ impl Ui {
             }
             let mine = accounts.iter().find(|a| is_local(a, &local));
             let title =
-                if unreachable { Some("⚠︎".to_string()) } else { mine.and_then(|a| f(a, "headroom")).map(|h| format!("{:.0}%", h)) };
+                if unreachable { Some("⚠︎".to_string()) } else { mine.and_then(|a| f(a, "headroom")).map(|h| format!("{h:.0}%")) };
             tray.set_title(title.as_deref());
-            let tip = accounts
-                .iter()
-                .map(|a| {
-                    format!(
-                        "{} {}",
-                        s(a, "label"),
-                        f(a, "headroom").map(|h| format!("{h:.0} % {}", l("dispo", "left"))).unwrap_or_else(|| "—".into())
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" · ");
+            let tip = accounts.iter().map(|a| format!("{} {}", s(a, "label"), headline(a))).collect::<Vec<_>>().join(" · ");
             let _ = tray.set_tooltip(Some(format!("VibeRooms — {tip}")));
         }
     }
@@ -865,8 +962,20 @@ impl Ui {
     }
 
     fn on_menu(&mut self, id: &MenuId) -> bool {
-        if let Some((item, key)) = self.sw_items.iter().find(|(i, _)| i.id() == id) {
+        if let Some(it) = self.items.iter().find(|it| it.open.id() == id || it.lines.iter().any(|(l, _)| l.id() == id)) {
+            let url = format!("{}/#account/{}", self.cfg.server, it.id);
+            let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
+            return false;
+        }
+        if let Some((item, key)) = self.items.iter().filter_map(|it| it.use_here.as_ref()).find(|(i, _)| i.id() == id) {
             item.set_checked(self.sw.active.as_deref() == Some(key.as_str())); // the real state arrives after the switch
+            if self.sw.active.as_deref() != Some(key.as_str()) {
+                let _ = self.sw_tx.send(switcher::SwCmd::Switch(key.clone()));
+            }
+            return false;
+        }
+        if let Some((item, key)) = self.sw_items.iter().find(|(i, _)| i.id() == id) {
+            item.set_checked(self.sw.active.as_deref() == Some(key.as_str()));
             if self.sw.active.as_deref() != Some(key.as_str()) {
                 let _ = self.sw_tx.send(switcher::SwCmd::Switch(key.clone()));
             }
@@ -897,7 +1006,6 @@ impl Ui {
             set_login_item(fx.login.is_checked());
             fx.login.set_checked(agent_plist().exists());
         } else {
-            // Header, accounts, gauges: open the dashboard.
             let _ = std::process::Command::new("/usr/bin/open").arg(&self.cfg.server).spawn();
         }
         false
@@ -1222,8 +1330,7 @@ fn main() {
         tray: None,
         fixed: None,
         signature: String::new(),
-        lines: vec![],
-        extras: vec![],
+        items: vec![],
         state: None,
         last_ok: None,
         last_err: None,
@@ -1231,7 +1338,6 @@ fn main() {
         tx,
         sw_tx,
         sw: switcher::Snapshot::default(),
-        sw_sub: None,
         sw_items: vec![],
         sw_add: None,
         sw_forget: vec![],

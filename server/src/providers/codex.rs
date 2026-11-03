@@ -180,14 +180,7 @@ fn window(key: String, w: &Value, model: Option<&str>, now: i64) -> Option<Limit
         (None, Some(s)) => kind_for(s),
         (None, None) => "other",
     };
-    Some(Limit {
-        key,
-        kind: kind.into(),
-        name: model.map(str::to_owned),
-        window_ms: secs.map(|s| s * 1000),
-        utilization: used.clamp(0.0, 100.0),
-        resets_at: reset.map(round_reset),
-    })
+    Some(Limit::percent(&key, kind, model.map(str::to_owned), secs.map(|s| s * 1000), used.clamp(0.0, 100.0), reset.map(round_reset)))
 }
 
 /// Normalises a `wham/usage` response.
