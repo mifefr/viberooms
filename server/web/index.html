@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VibeRooms</title>
+  <meta name="description" content="Self-hosted monitor of AI subscription limits">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand">
+        <img src="/favicon.svg" alt="" width="26" height="26">
+        <div>
+          <h1>VibeRooms</h1>
+          <p class="muted" data-i18n="subtitle"></p>
+        </div>
+      </div>
+      <div class="actions">
+        <span class="muted small" id="updated" aria-live="polite"></span>
+        <button class="btn ghost" id="refreshAll" data-i18n-title="refresh_all">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg>
+          <span data-i18n="refresh"></span>
+        </button>
+        <button class="btn primary" id="addAccount">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          <span data-i18n="add_account"></span>
+        </button>
+        <button class="btn ghost" id="langToggle" data-i18n-title="toggle_lang"><span id="langLabel"></span></button>
+        <button class="btn ghost icon" id="themeToggle" data-i18n-title="toggle_theme">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <section id="reco" class="reco" hidden></section>
+    <div id="groups"></div>
+
+    <section class="charts" id="charts" hidden>
+      <article class="panel chart-panel" data-kind="session">
+        <header>
+          <div>
+            <h2 data-i18n="chart_session"></h2>
+            <p class="muted small" data-i18n="chart_session_desc"></p>
+          </div>
+          <div class="seg" role="group" data-i18n-title="period">
+            <button data-hours="24" class="on">24 h</button><button data-hours="72">3 j</button>
+          </div>
+        </header>
+        <div class="legend"></div>
+        <div class="chart" role="img"></div>
+      </article>
+      <article class="panel chart-panel" data-kind="week">
+        <header>
+          <div>
+            <h2 data-i18n="chart_week"></h2>
+            <p class="muted small" data-i18n="chart_week_desc"></p>
+          </div>
+          <div class="seg" role="group" data-i18n-title="period">
+            <button data-hours="168" class="on">7 j</button><button data-hours="720">30 j</button>
+          </div>
+        </header>
+        <div class="legend"></div>
+        <div class="chart" role="img"></div>
+      </article>
+    </section>
+
+    <details class="panel table-panel" id="tablePanel" hidden>
+      <summary data-i18n="table_view"></summary>
+      <div class="table-wrap"><table id="table"></table></div>
+    </details>
+
+    <footer class="foot muted small"><span id="footInfo"></span></footer>
+  </div>
+
+  <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+
+  <dialog id="loginDialog" class="dialog">
+    <form method="dialog" class="dialog-body" id="loginForm">
+      <header>
+        <h2 id="loginTitle"></h2>
+        <button class="btn ghost icon" value="cancel" data-i18n-title="close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </header>
+      <ol class="steps">
+        <li id="stepProvider">
+          <label data-i18n="login_provider"></label>
+          <div class="provider-pick" id="providerPick" role="radiogroup"></div>
+        </li>
+        <li id="stepLabel">
+          <label for="loginLabel" data-i18n="login_label"></label>
+          <input id="loginLabel" maxlength="40" data-i18n-placeholder="login_label_ph" autocomplete="off">
+        </li>
+        <li>
+          <p data-i18n-html="login_open_text"></p>
+          <button type="button" class="btn" id="openAuth">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg>
+            <span data-i18n="login_open"></span>
+          </button>
+          <p class="muted small" id="authHint" hidden></p>
+        </li>
+        <li>
+          <label for="loginCode" id="codeLabel"></label>
+          <input id="loginCode" autocomplete="off" spellcheck="false" disabled>
+        </li>
+      </ol>
+      <p class="form-msg" id="loginMsg" role="status"></p>
+      <footer>
+        <p class="muted small" data-i18n="login_note"></p>
+        <button type="button" class="btn primary" id="loginSubmit" disabled data-i18n="connect"></button>
+      </footer>
+    </form>
+  </dialog>
+
+  <script src="/i18n.js"></script>
+  <script src="/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+# systemd unit for the VibeRooms server.
+#   sudo useradd --system --home /var/lib/viberooms --create-home viberooms
+#   sudo install -m 0755 target/release/viberooms /usr/local/bin/viberooms
+#   sudo install -m 0644 deploy/linux/viberooms.service /etc/systemd/system/
+#   sudo install -m 0600 -o viberooms deploy/linux/viberooms.env /etc/viberooms.env   # then edit it
+#   sudo systemctl enable --now viberooms
+[Unit]
+Description=VibeRooms — AI subscription limits monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=viberooms
+EnvironmentFile=/etc/viberooms.env
+ExecStart=/usr/local/bin/viberooms
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/viberooms
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
