@@ -57,6 +57,11 @@ restent sur le serveur, dans `accounts.json` (mode `0600`), et ne sont jamais en
 
 ## Installer le serveur
 
+**Binaires prêts à l'emploi** : télécharge l'archive de ton système sur la page
+[Releases](https://github.com/mifefr/viberooms/releases/latest) (Linux x86_64 et aarch64, macOS Apple Silicon), puis
+lance `tar -xzf viberooms-*.tar.gz && ./viberooms`. Les versions macOS ne sont pas notarisées par Apple : si macOS
+refuse de lancer le binaire, retire le marqueur de téléchargement avec `xattr -dr com.apple.quarantine viberooms`.
+
 **Depuis les sources** (Rust 1.80+) :
 
 ```sh
@@ -99,6 +104,11 @@ Quand une session expire (après environ 4 semaines sans usage), la carte affich
 le compte depuis son panneau de détails.
 
 ## App barre de menus (macOS)
+
+Télécharge `VibeRooms-macos-arm64.zip` sur la page [Releases](https://github.com/mifefr/viberooms/releases/latest),
+décompresse-le, place `VibeRooms.app` dans `~/Applications` et lance une fois
+`xattr -dr com.apple.quarantine ~/Applications/VibeRooms.app` (l'app n'est pas notarisée, macOS la bloque sinon).
+Ou compile-la depuis les sources :
 
 ```sh
 ./deploy/macos/bundle-bar.sh && cp -R dist/VibeRooms.app ~/Applications/ && open ~/Applications/VibeRooms.app

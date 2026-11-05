@@ -72,6 +72,11 @@ sharing them would log your Claude Code or Codex out. Tokens are stored on the s
 
 ## Install the server
 
+**Prebuilt binaries**: download the archive for your system from the
+[Releases](https://github.com/mifefr/viberooms/releases/latest) page (Linux x86_64 and aarch64, macOS Apple Silicon),
+then run `tar -xzf viberooms-*.tar.gz && ./viberooms`. The macOS builds are not notarized by Apple: if macOS refuses to
+run one, clear the download flag with `xattr -dr com.apple.quarantine viberooms`.
+
 **From source** (Rust 1.80+):
 
 ```sh
@@ -129,6 +134,11 @@ details panel. API keys are checked with a read-only call before they are saved.
 Deep links: `/#account/<id>` opens an account, `/#add` or `/#add/<service>` the add dialog.
 
 ## Menu bar app (macOS)
+
+Download `VibeRooms-macos-arm64.zip` from the [Releases](https://github.com/mifefr/viberooms/releases/latest) page,
+unzip it, move `VibeRooms.app` to `~/Applications` and run
+`xattr -dr com.apple.quarantine ~/Applications/VibeRooms.app` once (the app is not notarized, so macOS blocks it
+otherwise). Or build it from source:
 
 ```sh
 ./deploy/macos/bundle-bar.sh && cp -R dist/VibeRooms.app ~/Applications/ && open ~/Applications/VibeRooms.app
