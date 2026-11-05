@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Builds the menu bar app and assembles "VibeRooms.app" in dist/ (ad-hoc signed).
 set -euo pipefail
-export PATH=$HOME/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:$PATH:/usr/bin:/bin:/usr/sbin:/sbin"
 ROOT=${0:A:h:h:h}
 cd "$ROOT"
 cargo build --release -p viberooms-bar

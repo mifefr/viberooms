@@ -3,7 +3,7 @@
 # Every VR_* variable set when running this script is written into the agent, e.g.:
 #   VR_HOST=127.0.0.1,100.64.0.10 VR_HOMEPAGE_DIR=~/.config/homepage ./deploy/macos/install-server.sh
 set -euo pipefail
-export PATH=$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH:/usr/bin:/bin:/usr/sbin:/sbin"
 ROOT=${0:A:h:h:h}
 LABEL=com.allanbruyere.viberooms.server
 PLIST=$HOME/Library/LaunchAgents/$LABEL.plist
