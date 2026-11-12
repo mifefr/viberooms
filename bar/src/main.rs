@@ -367,6 +367,7 @@ enum UserEvent {
     Tick,
     Switcher(switcher::Snapshot),
     SwitchResult(Result<String, String>),
+    Enrolled(switcher::Identity),
 }
 
 /// Switcher thread: watches the Claude Code session of this Mac and performs switches (off the UI loop).
@@ -374,6 +375,9 @@ fn switcher_loop(proxy: EventLoopProxy<UserEvent>, rx: mpsc::Receiver<switcher::
     let mut sw = switcher::Switcher::new();
     loop {
         sw.tick();
+        if let Some(id) = sw.take_enrolled() {
+            let _ = proxy.send_event(UserEvent::Enrolled(id));
+        }
         if proxy.send_event(UserEvent::Switcher(sw.snapshot())).is_err() {
             return;
         }
@@ -961,6 +965,23 @@ impl Ui {
         }
     }
 
+    /// An account was just added to this Mac's switching. The server cannot reuse that session (refresh
+    /// tokens rotate, so two holders of one grant log each other out): it needs its own sign-in, so open
+    /// its add dialog when it does not follow the account yet.
+    fn on_enrolled(&self, id: &switcher::Identity) {
+        let added = Some((id.email.to_lowercase(), id.org_uuid.clone()));
+        if self.accounts().iter().any(|a| is_local(a, &added)) {
+            return;
+        }
+        let url = format!("{}/#add/claude", self.cfg.server);
+        let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
+        if fr() {
+            notify("Suivi des quotas", &format!("Le serveur ne suit pas encore {} : connecte-le aussi dans la page ouverte.", id.email));
+        } else {
+            notify("Usage tracking", &format!("The server does not follow {} yet: sign it in on the page that opened.", id.email));
+        }
+    }
+
     fn on_menu(&mut self, id: &MenuId) -> bool {
         if let Some(it) = self.items.iter().find(|it| it.open.id() == id || it.lines.iter().any(|(l, _)| l.id() == id)) {
             let url = format!("{}/#account/{}", self.cfg.server, it.id);
@@ -1365,6 +1386,7 @@ fn main() {
                 ui.sw = snap;
                 ui.refresh_texts();
             }
+            Event::UserEvent(UserEvent::Enrolled(id)) => ui.on_enrolled(&id),
             Event::UserEvent(UserEvent::SwitchResult(res)) => match res {
                 Ok(email) => {
                     let accounts = ui.accounts();

@@ -131,7 +131,9 @@ Si tu as déjà une barre d'état, ajoute `--wrap '<ta commande>'` pour afficher
 
 **Bascule de compte Claude Code** (expérimentale, désactivée par défaut, `"switcher": true`) : le menu change le compte
 Claude qu'utilise Claude Code **sur ce Mac**. Il ne remplace que `claudeAiOauth` dans le trousseau (tes jetons MCP sont
-conservés) et `oauthAccount` dans `~/.claude.json`. Trois précautions :
+conservés) et `oauthAccount` dans `~/.claude.json`. Si le serveur ne suit pas encore un compte ajouté depuis le menu, le
+tableau de bord s'ouvre ensuite sur l'ajout : le serveur a besoin de sa propre connexion, car deux détenteurs d'une même
+session se déconnectent l'un l'autre au renouvellement du jeton. Trois précautions :
 - les sessions déjà ouvertes gardent l'ancien compte jusqu'au renouvellement de leur jeton : relance-les ;
 - la bascule touche au format de stockage interne de Claude Code, qui peut changer ;
 - vérifie que changer de compte est compatible avec les conditions de ton offre.

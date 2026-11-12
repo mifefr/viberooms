@@ -311,6 +311,8 @@ pub struct Switcher {
     active: Option<String>,
     guard: Option<(String, i64)>,
     enroll: Option<Enroll>,
+    /// Identity of the account the last sign-in added, until the UI has taken it.
+    enrolled: Option<Identity>,
 }
 
 fn enroll_dir() -> PathBuf {
@@ -319,7 +321,20 @@ fn enroll_dir() -> PathBuf {
 
 impl Switcher {
     pub fn new() -> Self {
-        Self { cc_account: keychain_account_for_cc(), entries: load_index(), last_hash: None, active: None, guard: None, enroll: None }
+        Self {
+            cc_account: keychain_account_for_cc(),
+            entries: load_index(),
+            last_hash: None,
+            active: None,
+            guard: None,
+            enroll: None,
+            enrolled: None,
+        }
+    }
+
+    /// The account added by the last sign-in, once.
+    pub fn take_enrolled(&mut self) -> Option<Identity> {
+        self.enrolled.take()
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -458,6 +473,7 @@ impl Switcher {
                             notify("Account added", &format!("{} is available for Claude Code switching.", id.email));
                         }
                         self.finish_enroll(svc);
+                        self.enrolled = Some(id);
                     }
                     Err(e) => notify(l("Ajout du compte impossible", "Could not add the account"), &e),
                 }

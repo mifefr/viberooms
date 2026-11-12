@@ -175,7 +175,9 @@ line? Add `--wrap '<your command>'` and both are shown side by side.
 With `"switcher": true`, the menu can switch the Claude account that Claude Code uses **on this Mac**. It swaps only
 `claudeAiOauth` in the `Claude Code-credentials` keychain item, keeping your MCP tokens, and `oauthAccount` in
 `~/.claude.json`. Accounts are added through `claude auth login` in a separate config directory, so your current
-session is never touched, and kept in the keychain (`VibeRooms account` items).
+session is never touched, and kept in the keychain (`VibeRooms account` items). If the server does not follow that
+account yet, the menu then opens the dashboard's add dialog: the server needs its own sign-in, because two holders of one
+session would log each other out when its token rotates.
 
 Caveats:
 - Claude sessions already open keep the previous account until their token renews: restart them.
