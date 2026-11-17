@@ -17,6 +17,8 @@ from the dashboard, without code.
 - **"Use now"**: per tool (Claude Code, Codex), the account with the most headroom.
 - **macOS menu bar app**: one gauge per account, native menu, notifications at 80 % / 95 % / reset.
 - **Claude Code status line**: `Personal 20% ↻1h22 · wk 4% │ Work 31% left`.
+- **Claude Code sessions**: one click opens Claude Code on the chosen account in a new iTerm or Terminal window,
+  several accounts side by side.
 - **[Homepage](https://gethomepage.dev) integration**: a group of widgets, kept in sync automatically.
 - **Self-hosted**: one Rust binary (≈7 MB) with SQLite. Run it on your own computer, or on an always-on home server
   reached over Tailscale to follow it from every device. No cloud, no telemetry.
@@ -147,13 +149,14 @@ otherwise). Or build it from source:
 Configuration lives in `~/Library/Application Support/VibeRooms/config.json`:
 
 ```json
-{ "server": "http://100.64.0.10:8790", "notifications": true, "lang": "auto", "switcher": false }
+{ "server": "http://100.64.0.10:8790", "notifications": true, "lang": "auto", "switcher": false, "terminal": "iterm" }
 ```
 
 The menu shows one line per account, grouped by tool, with a coloured level (🟢 🟡 🔴) and the headroom left; the
 details (every limit, reset time, extra credits) are in its submenu, along with a link to the account in the
-dashboard. The top line says which account to use now for each tool. **Settings** holds notifications, **Open at
-login** and account switching. The menu bar icon draws up to five gauges, Claude accounts first.
+dashboard. The top line says which account to use now for each tool. **Claude Code sessions** opens Claude Code on an
+account ([below](#claude-code-sessions-one-window-per-account)). **Settings** holds notifications, **Open at login**
+and account switching. The menu bar icon draws up to five gauges, Claude accounts first.
 
 ### Claude Code status line
 
@@ -168,9 +171,47 @@ In `~/.claude/settings.json`:
 ```
 
 It reads a local cache written by the menu bar app, so it costs no network call (≈15 ms). Already have a status
-line? Add `--wrap '<your command>'` and both are shown side by side.
+line? Add `--wrap '<your command>'` and both are shown side by side. In a session started with `CLAUDE_CONFIG_DIR`
+(see below), it shows that session's account first.
+
+### Claude Code sessions: one window per account
+
+Each Claude account can have its own Claude Code session on this Mac, opened in a new terminal window in one click,
+so several accounts work side by side. A session is a Claude Code config directory: `~/.claude` (your usual one) or
+`~/.claude-<name>`, run with `CLAUDE_CONFIG_DIR`. Claude Code keeps the sign-in of each directory apart, so nothing is
+swapped and open sessions are not affected. VibeRooms reads no token here: it finds the sessions in your home folder
+and reads which account each one is signed in to from its `.claude.json`.
+
+- **▶ Open Claude Code on &lt;account&gt;**, under the top line, opens the session of the account with the most headroom
+  (the recommended one when it has a session). The ⇄ switch shortcut is then hidden: there is nothing to switch.
+- In the submenu of a Claude account, **▶ Open Claude Code** opens its session. When the account has none yet,
+  **Set up Claude Code for this account…** creates `~/.claude-<account>` and starts Claude Code there to sign in.
+- **Claude Code sessions** lists every session, creates a named one (**New session…**), picks the terminal and the
+  **Start folder**: one picked before, your home folder, or **Ask each time** (a folder dialog at each opening).
+  Start in a project folder rather than your home folder: Claude Code asks again at every start whether to trust the
+  home folder, with **No, exit** preselected.
+
+A new session shares your setup with `~/.claude` through symlinks: `settings.json`, `CLAUDE.md`, `agents`, `commands`,
+`skills`, `plugins`, `output-styles`, `hooks` and `keybindings.json`, when they exist. History, projects and memory
+stay per session, and so do MCP servers added with `--scope user` (they live in the session's `.claude.json`): add
+them again in the session, or declare them per project in `.mcp.json`. To sign in with another account than the one
+your browser is on, open the sign-in link in a private window. To remove a session, delete its folder.
+
+| `config.json` key | Default | Description |
+|---|---|---|
+| `terminal` | `iterm` when installed, else `terminal` | `iterm` (new window), `iterm-tab`, `terminal` (Terminal.app) or `custom`. Also in the menu. |
+| `terminalCommand` | — | With `custom`: a shell command opening your terminal, where `{cmd}` is the command line to run, e.g. `wezterm start -- zsh -lic {cmd}`. |
+| `workdir` | the terminal's | Folder the sessions start in, e.g. `~/Sites`. Also in the menu. |
+| `workdirAsk` | `false` | Ask for the folder at each opening, starting from `workdir`. Also in the menu. |
+| `workdirs` | — | Folders picked before, offered in the menu (kept by VibeRooms). |
+
+The first time, macOS asks whether VibeRooms may control iTerm or Terminal. From a terminal, Raycast or Alfred,
+`viberooms-bar --sessions` lists the sessions and `viberooms-bar --open [<folder, e-mail or account>] [--in <dir>]`
+opens one (by default the one with the most headroom, in the start folder; `--dry-run` prints what would run).
 
 ### Account switching for Claude Code (experimental, off by default)
+
+Prefer [sessions](#claude-code-sessions-one-window-per-account) when you can: they need no switch and no restart.
 
 With `"switcher": true`, the menu can switch the Claude account that Claude Code uses **on this Mac**. It swaps only
 `claudeAiOauth` in the `Claude Code-credentials` keychain item, keeping your MCP tokens, and `oauthAccount` in

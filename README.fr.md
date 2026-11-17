@@ -19,6 +19,8 @@ compte utiliser maintenant.
 - **« À utiliser maintenant »** : pour chaque outil (Claude Code, Codex), le compte qui a le plus de marge.
 - **App barre de menus macOS** : une jauge par compte, un menu natif, des notifications à 80 %, 95 % et au reset.
 - **Barre d'état de Claude Code** : `Perso 20% ↻1h22 · sem 4% │ Boulot 31% dispo`.
+- **Sessions Claude Code** : un clic ouvre Claude Code sur le compte choisi dans une nouvelle fenêtre iTerm ou
+  Terminal, plusieurs comptes côte à côte.
 - **Intégration [Homepage](https://gethomepage.dev)** : un groupe de widgets, synchronisé automatiquement.
 - **Auto-hébergé** : un seul binaire Rust (≈ 7 Mo) avec SQLite. Lance-le sur ton propre ordinateur (le serveur et l'app
   visent `127.0.0.1:8790` par défaut), ou sur une machine toujours allumée jointe par Tailscale pour le suivre depuis
@@ -117,19 +119,56 @@ Ou compile-la depuis les sources :
 La configuration se trouve dans `~/Library/Application Support/VibeRooms/config.json` :
 
 ```json
-{ "server": "http://100.64.0.10:8790", "notifications": true, "lang": "auto", "switcher": false }
+{ "server": "http://100.64.0.10:8790", "notifications": true, "lang": "auto", "switcher": false, "terminal": "iterm" }
 ```
 
 Le menu affiche une ligne par compte, groupée par outil, avec un niveau en couleur (🟢 🟡 🔴) et la marge restante ; le
 détail (chaque limite, son reset, les crédits) est dans son sous-menu, avec un lien vers le compte dans le tableau de
-bord. La première ligne indique le compte à utiliser par outil. **Réglages** regroupe les notifications, **Ouvrir à la
-connexion** et la bascule de compte.
+bord. La première ligne indique le compte à utiliser par outil. **Sessions Claude Code** ouvre Claude Code sur un compte
+(voir plus bas). **Réglages** regroupe les notifications, **Ouvrir à la connexion** et la bascule de compte.
 
 **Barre d'état de Claude Code** : dans `~/.claude/settings.json`, ajoute
 `"statusLine": { "type": "command", "command": "'/Users/toi/Applications/VibeRooms.app/Contents/MacOS/viberooms-bar' --statusline", "refreshInterval": 30 }`.
-Si tu as déjà une barre d'état, ajoute `--wrap '<ta commande>'` pour afficher les deux côte à côte.
+Si tu as déjà une barre d'état, ajoute `--wrap '<ta commande>'` pour afficher les deux côte à côte. Dans une session
+lancée avec `CLAUDE_CONFIG_DIR` (voir ci-dessous), elle affiche d'abord le compte de cette session.
 
-**Bascule de compte Claude Code** (expérimentale, désactivée par défaut, `"switcher": true`) : le menu change le compte
+**Sessions Claude Code, une fenêtre par compte** : chaque compte Claude peut avoir sa propre session Claude Code sur ce
+Mac, ouverte en un clic dans une nouvelle fenêtre de terminal, ce qui permet de travailler avec plusieurs comptes côte à
+côte. Une session est un dossier de configuration de Claude Code : `~/.claude` (le tien habituel) ou `~/.claude-<nom>`,
+lancé avec `CLAUDE_CONFIG_DIR`. Claude Code garde la connexion de chaque dossier séparée : rien n'est échangé et les
+sessions ouvertes ne sont pas touchées. VibeRooms ne lit ici aucun jeton : il trouve les sessions dans ton dossier
+personnel et lit dans leur `.claude.json` le compte auquel chacune est connectée.
+- **▶ Ouvrir Claude Code sur &lt;compte&gt;**, sous la première ligne, ouvre la session du compte qui a le plus de marge (le
+  compte recommandé quand il a une session). Le raccourci de bascule ⇄ est alors masqué : il n'y a rien à basculer.
+- Dans le sous-menu d'un compte Claude, **▶ Ouvrir Claude Code** ouvre sa session. Si le compte n'en a pas encore,
+  **Connecter Claude Code à ce compte…** crée `~/.claude-<compte>` et y lance Claude Code pour se connecter.
+- **Sessions Claude Code** liste les sessions, en crée une avec le nom de ton choix (**Nouvelle session…**), choisit
+  le terminal et le **Dossier de départ** : un dossier déjà choisi, ton dossier personnel, ou **Demander à chaque
+  ouverture** (une fenêtre de choix à chaque fois). Préfère un dossier de projet à ton dossier personnel : Claude Code
+  redemande à chaque démarrage s'il peut faire confiance au dossier personnel, avec **No, exit** présélectionné.
+
+Une nouvelle session partage ta configuration avec `~/.claude` par des liens symboliques : `settings.json`,
+`CLAUDE.md`, `agents`, `commands`, `skills`, `plugins`, `output-styles`, `hooks` et `keybindings.json`, quand ils
+existent. L'historique, les projets et la mémoire restent propres à chaque session, comme les serveurs MCP ajoutés avec
+`--scope user` (ils sont dans le `.claude.json` de la session) : ajoute-les à nouveau dans la session, ou déclare-les par
+projet dans `.mcp.json`. Pour te connecter avec un autre compte que celui de ton navigateur, ouvre le lien de connexion
+dans une fenêtre privée. Pour supprimer une session, supprime son dossier.
+
+| Clé de `config.json` | Défaut | Description |
+|---|---|---|
+| `terminal` | `iterm` s'il est installé, sinon `terminal` | `iterm` (nouvelle fenêtre), `iterm-tab`, `terminal` (Terminal.app) ou `custom`. Aussi dans le menu. |
+| `terminalCommand` | — | Avec `custom` : une commande shell qui ouvre ton terminal, où `{cmd}` est la ligne de commande à lancer, par exemple `wezterm start -- zsh -lic {cmd}`. |
+| `workdir` | celui du terminal | Dossier où démarrent les sessions, par exemple `~/Sites`. Aussi dans le menu. |
+| `workdirAsk` | `false` | Demander le dossier à chaque ouverture, en partant de `workdir`. Aussi dans le menu. |
+| `workdirs` | — | Dossiers déjà choisis, proposés dans le menu (tenu par VibeRooms). |
+
+La première fois, macOS demande si VibeRooms peut piloter iTerm ou Terminal. Depuis un terminal, Raycast ou Alfred,
+`viberooms-bar --sessions` liste les sessions et `viberooms-bar --open [<dossier, e-mail ou compte>] [--in <dossier>]`
+en ouvre une (par défaut celle qui a le plus de marge, dans le dossier de départ ; `--dry-run` affiche ce qui serait
+lancé).
+
+**Bascule de compte Claude Code** (expérimentale, désactivée par défaut, `"switcher": true`) : préfère les sessions
+quand c'est possible, elles n'exigent ni bascule ni redémarrage. Le menu change le compte
 Claude qu'utilise Claude Code **sur ce Mac**. Il ne remplace que `claudeAiOauth` dans le trousseau (tes jetons MCP sont
 conservés) et `oauthAccount` dans `~/.claude.json`. Si le serveur ne suit pas encore un compte ajouté depuis le menu, le
 tableau de bord s'ouvre ensuite sur l'ajout : le serveur a besoin de sa propre connexion, car deux détenteurs d'une même
