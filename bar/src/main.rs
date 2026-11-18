@@ -1,5 +1,5 @@
 //! VibeRooms menu bar (macOS): gauges per account, native menu, notifications, Claude Code status
-//! line, Claude Code sessions opened in a terminal in one click (one per account, side by side) and,
+//! line, sessions of Claude Code, Codex… opened in a terminal in one click (one per account, side by side) and,
 //! optionally, switching the Claude Code account of this Mac.
 
 mod draw;
@@ -80,7 +80,7 @@ struct Config {
     lang: String,
     /// Experimental: switch the Claude Code account of this Mac from the menu.
     switcher: bool,
-    /// Terminal for Claude Code sessions: "iterm", "iterm-tab", "terminal" or "custom" (empty: iTerm when
+    /// Terminal for the sessions: "iterm", "iterm-tab", "terminal" or "custom" (empty: iTerm when
     /// installed, else Terminal).
     terminal: String,
     /// Command opening a custom terminal, `{cmd}` standing for the quoted command line.
@@ -91,6 +91,10 @@ struct Config {
     workdir_ask: bool,
     /// Start folders picked before, most recent first (offered in the menu).
     workdirs: Vec<String>,
+    /// Tools declared in config.json (`tools`), kept as written.
+    tools: Value,
+    /// Account of each session of a tool whose sign-in VibeRooms does not read (`links`).
+    links: launch::Links,
 }
 
 impl Config {
@@ -119,6 +123,17 @@ impl Config {
                 .filter(|t| !t.is_empty())
                 .map(str::to_owned)
                 .collect(),
+            tools: v.get("tools").cloned().unwrap_or(Value::Null),
+            links: v
+                .get("links")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .filter_map(|(dir, l)| {
+                    let email = l.get("email").and_then(Value::as_str).filter(|e| !e.is_empty())?.to_string();
+                    Some((dir.clone(), launch::Link { email, org: l.get("org").and_then(Value::as_str).map(str::to_owned) }))
+                })
+                .collect(),
         }
     }
     fn save(&self) {
@@ -140,6 +155,14 @@ impl Config {
         if !self.workdirs.is_empty() {
             v["workdirs"] = self.workdirs.clone().into();
         }
+        if !self.tools.is_null() {
+            v["tools"] = self.tools.clone();
+        }
+        if !self.links.is_empty() {
+            let links: serde_json::Map<String, Value> =
+                self.links.iter().map(|(d, l)| (d.clone(), serde_json::json!({ "email": l.email, "org": l.org }))).collect();
+            v["links"] = links.into();
+        }
         let _ = std::fs::write(support_dir().join("config.json"), serde_json::to_vec_pretty(&v).unwrap());
     }
     fn launch_opts(&self) -> launch::Opts {
@@ -147,6 +170,18 @@ impl Config {
             terminal: launch::Terminal::from_config(&self.terminal, self.terminal_command.as_deref()),
             workdir: self.workdir.as_deref().map(launch::expand),
             ask_workdir: self.workdir_ask,
+        }
+    }
+    /// Links the session at `dir` to an account (None: unlinks it).
+    fn set_link(&mut self, dir: &Path, link: Option<launch::Link>) {
+        let key = launch::tilde(dir);
+        match link {
+            Some(l) => {
+                self.links.insert(key, l);
+            }
+            None => {
+                self.links.remove(&key);
+            }
         }
     }
     /// Start folders offered in the menu: the current one, then the ones picked before.
@@ -190,7 +225,7 @@ impl Config {
 
 const MAX_FOLDERS: usize = 6;
 
-/// Where Claude Code sessions start, as chosen in the menu.
+/// Where the sessions start, as chosen in the menu.
 #[derive(Clone, Debug, PartialEq)]
 enum Start {
     Folder(String),
@@ -358,10 +393,10 @@ fn local_account() -> Option<(String, Option<String>)> {
     Some((s(oa, "emailAddress").to_lowercase(), oa.get("organizationUuid").and_then(Value::as_str).map(str::to_owned)))
 }
 
-/// True when the server-side account `a` is the Claude account `email` (same organisation when both
+/// True when the server-side account `a` is the `provider` account `email` (same organisation when both
 /// sides know it).
-fn account_matches(a: &Value, email: &str, org: Option<&str>) -> bool {
-    s(a, "provider") == "claude"
+fn account_matches(a: &Value, provider: &str, email: &str, org: Option<&str>) -> bool {
+    s(a, "provider") == provider
         && !email.is_empty()
         && s(a, "email").eq_ignore_ascii_case(email)
         && match (a.get("orgUuid").and_then(Value::as_str), org) {
@@ -371,23 +406,30 @@ fn account_matches(a: &Value, email: &str, org: Option<&str>) -> bool {
 }
 
 fn is_local(a: &Value, local: &Option<(String, Option<String>)>) -> bool {
-    local.as_ref().is_some_and(|(email, org)| account_matches(a, email, org.as_deref()))
+    local.as_ref().is_some_and(|(email, org)| account_matches(a, "claude", email, org.as_deref()))
 }
 
-// ---------- Claude Code sessions ----------
+// ---------- Sessions (Claude Code, Codex…) ----------
+/// True when the session `x` is signed in (or linked) to the server-side account `a`.
+fn session_is(x: &launch::Session, a: &Value) -> bool {
+    match (x.tool.provider.as_deref(), x.email.as_deref()) {
+        (Some(p), Some(e)) => account_matches(a, p, e, x.org_uuid.as_deref()),
+        _ => false,
+    }
+}
+
 /// Server-side account a session is signed in to.
 fn session_account<'a>(x: &launch::Session, accounts: &'a [Value]) -> Option<&'a Value> {
-    let email = x.email.as_deref()?;
-    accounts.iter().find(|a| account_matches(a, email, x.org_uuid.as_deref()))
+    accounts.iter().find(|a| session_is(x, a))
 }
 
 /// Session of this Mac signed in to the server-side account `a`.
 fn session_for<'a>(sessions: &'a [launch::Session], a: &Value) -> Option<&'a launch::Session> {
-    sessions.iter().find(|x| x.email.as_deref().is_some_and(|e| account_matches(a, e, x.org_uuid.as_deref())))
+    sessions.iter().find(|x| session_is(x, a))
 }
 
-/// The session to open in one click, with its account label and headroom: the recommended Claude account
-/// when it has a session here, else the one with the most headroom.
+/// The session to open in one click, with its account label and headroom: the recommended account when it
+/// has a session here, else the one with the most headroom.
 fn best_session(sessions: &[launch::Session], accounts: &[Value]) -> Option<(launch::Session, String, f64)> {
     accounts
         .iter()
@@ -400,24 +442,26 @@ fn best_session(sessions: &[launch::Session], accounts: &[Value]) -> Option<(lau
         .map(|(x, label, h, _)| (x.clone(), label.to_string(), h))
 }
 
-/// "MSDS-PERSO — 82 % left · ~/.claude-perso".
-fn session_text(x: &launch::Session, accounts: &[Value]) -> String {
+/// "MSDS-PERSO — 82 % left · ~/.claude-perso", after "Codex · " when several tools are listed.
+fn session_text(x: &launch::Session, accounts: &[Value], with_tool: bool) -> String {
     let who = match (session_account(x, accounts), &x.email) {
         (Some(a), _) => match f(a, "headroom") {
             Some(h) => format!("{} — {h:.0} % {}", s(a, "label"), l("dispo", "left")),
             None => s(a, "label").to_string(),
         },
         (None, Some(e)) => e.clone(),
+        (None, None) if x.tool.identity == launch::Identity::Linked => l("compte non relié", "no linked account").to_string(),
         (None, None) => l("non connectée", "not signed in").to_string(),
     };
-    format!("{who} · {}", x.short_dir())
+    let tool = if with_tool { format!("{} · ", x.tool.name) } else { String::new() };
+    format!("{tool}{who} · {}", x.short_dir())
 }
 
-fn best_text(label: &str, head: f64) -> String {
+fn best_text(tool: &str, label: &str, head: f64) -> String {
     if fr() {
-        format!("▶ Ouvrir Claude Code sur {label} ({head:.0} % dispo)")
+        format!("▶ Ouvrir {tool} sur {label} ({head:.0} % dispo)")
     } else {
-        format!("▶ Open Claude Code on {label} ({head:.0} % left)")
+        format!("▶ Open {tool} on {label} ({head:.0} % left)")
     }
 }
 
@@ -522,6 +566,8 @@ enum UserEvent {
     Enrolled(switcher::Identity),
     /// A start folder picked in the dialog.
     Folder(PathBuf),
+    /// A session VibeRooms created for an account (its directory, the account).
+    Linked(PathBuf, launch::Link),
 }
 
 /// Switcher thread: watches the Claude Code session of this Mac and performs switches (off the UI loop).
@@ -597,17 +643,17 @@ struct AccountItems {
     lines: Vec<(IconMenuItem, String)>, // (item, window key)
     extra: Option<MenuItem>,
     open: MenuItem,
-    launch: Option<(MenuItem, Launch)>,
+    launch: Vec<(MenuItem, Launch)>,
     use_here: Option<(CheckMenuItem, String)>, // (item, vault key)
 }
 
-/// What the Claude Code item of an account does.
+/// What the ▶ item of a tool in an account's submenu does.
 #[derive(Clone)]
 enum Launch {
     /// Open its session in a new terminal window.
     Open(launch::Session),
-    /// No session for it yet: create one and sign in.
-    Create { label: String, email: String },
+    /// No session for it yet: create one (linked to the account) and sign in.
+    Create { tool: launch::Tool, label: String, link: launch::Link },
 }
 
 struct Ui {
@@ -629,10 +675,17 @@ struct Ui {
     sw_shortcut: Option<(MenuItem, String)>,
     sw_info: Option<MenuItem>,
     suggested: Option<String>,
+    tools: Vec<launch::Tool>,
     sessions: Vec<launch::Session>,
-    launch_best: Option<(MenuItem, launch::Session)>,
+    /// ▶ under the top line, one per tool.
+    launch_best: Vec<(MenuItem, launch::Session)>,
+    /// Sessions opened by their own line (Claude Code), with their text kept up to date.
     ses_items: Vec<(MenuItem, launch::Session)>,
-    ses_new: Option<MenuItem>,
+    /// Sessions of the other tools: a submenu (text kept up to date) with ▶ Open and the linked account.
+    ses_subs: Vec<(Submenu, launch::Session)>,
+    ses_open: Vec<(MenuItem, launch::Session)>,
+    ses_links: Vec<(CheckMenuItem, PathBuf, Option<launch::Link>)>,
+    ses_new: Vec<(MenuItem, launch::Tool)>,
     term_items: Vec<(CheckMenuItem, &'static str)>,
     start_items: Vec<(CheckMenuItem, Start)>,
     start_pick: Option<MenuItem>,
@@ -805,7 +858,7 @@ impl Ui {
             return None;
         }
         let rec = accounts.iter().find(|a| s(a, "provider") == "claude" && a.get("recommended").and_then(Value::as_bool) == Some(true))?;
-        if session_for(&self.sessions, rec).is_some() {
+        if session_for(&self.sessions_of("claude"), rec).is_some() {
             return None;
         }
         let e = self.sw.entries.iter().find(|e| Self::entry_account(e, std::slice::from_ref(rec)).is_some())?;
@@ -828,17 +881,41 @@ impl Ui {
         let sessions = self
             .sessions
             .iter()
-            .map(|x| format!("{}:{}:{}", x.dir.display(), x.email.as_deref().unwrap_or(""), x.org_uuid.as_deref().unwrap_or("")))
+            .map(|x| {
+                format!("{}:{}:{}:{}", x.tool.id, x.dir.display(), x.email.as_deref().unwrap_or(""), x.org_uuid.as_deref().unwrap_or(""))
+            })
             .collect::<Vec<_>>()
             .join(",");
+        let best: Vec<String> = self
+            .shown_tools(accounts)
+            .iter()
+            .map(|t| format!("{}={:?}", t.id, best_session(&self.sessions_of(&t.id), accounts).map(|b| b.0.dir)))
+            .collect();
         format!(
             "{acc}#{}#{}#{}#{:?}#{sessions}#{:?}",
             self.sw.entries.iter().map(|e| format!("{}:{}", e.key, e.expired())).collect::<Vec<_>>().join(","),
             self.sw.enrolling,
             self.cfg.switcher,
             self.shortcut_target(accounts).map(|t| t.0),
-            best_session(&self.sessions, accounts).map(|b| b.0.dir),
+            best,
         )
+    }
+
+    /// Tools listed in the menu: declared in config.json, or with a session here or an account on the server.
+    fn shown_tools(&self, accounts: &[Value]) -> Vec<launch::Tool> {
+        self.tools
+            .iter()
+            .filter(|t| {
+                t.declared
+                    || self.sessions.iter().any(|x| x.tool.id == t.id)
+                    || t.provider.as_deref().is_some_and(|p| accounts.iter().any(|a| s(a, "provider") == p))
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn sessions_of(&self, tool: &str) -> Vec<launch::Session> {
+        self.sessions.iter().filter(|x| x.tool.id == tool).cloned().collect()
     }
 
     fn extra_text(a: &Value) -> String {
@@ -884,6 +961,13 @@ impl Ui {
         sub
     }
 
+    /// A session VibeRooms created for an account is linked to it.
+    fn on_linked(&mut self, dir: &Path, link: launch::Link) {
+        self.cfg.set_link(dir, Some(link));
+        self.cfg.save();
+        self.refresh_texts();
+    }
+
     /// A start folder picked in the dialog becomes the current one (and joins the menu).
     fn on_folder(&mut self, p: &Path) {
         self.cfg.set_start(&Start::Folder(launch::tilde(p)));
@@ -910,11 +994,14 @@ impl Ui {
             quit: MenuItem::new(l("Quitter VibeRooms", "Quit VibeRooms"), true, None),
         };
         let _ = menu.append(&fx.header);
-        self.launch_best = None;
-        if let Some((x, label, head)) = best_session(&self.sessions, &accounts) {
-            let item = MenuItem::new(best_text(&label, head), true, None);
-            let _ = menu.append(&item);
-            self.launch_best = Some((item, x));
+        let shown = self.shown_tools(&accounts);
+        self.launch_best.clear();
+        for t in &shown {
+            if let Some((x, label, head)) = best_session(&self.sessions_of(&t.id), &accounts) {
+                let item = MenuItem::new(best_text(&t.name, &label, head), true, None);
+                let _ = menu.append(&item);
+                self.launch_best.push((item, x));
+            }
         }
         self.sw_shortcut = None;
         if let Some((key, label)) = self.shortcut_target(&accounts) {
@@ -955,20 +1042,30 @@ impl Ui {
                     item
                 });
                 let _ = sub.append(&PredefinedMenuItem::separator());
-                let launch = (s(a, "provider") == "claude").then(|| {
-                    let (text, target) = match session_for(&self.sessions, a) {
-                        Some(x) => {
-                            (format!("▶ {} ({})", l("Ouvrir Claude Code", "Open Claude Code"), x.short_dir()), Launch::Open(x.clone()))
-                        }
+                let mut launch = vec![];
+                for t in shown.iter().filter(|t| t.provider.as_deref() == Some(s(a, "provider"))) {
+                    let (text, target) = match session_for(&self.sessions_of(&t.id), a) {
+                        Some(x) => (format!("▶ {} {} ({})", l("Ouvrir", "Open"), t.name, x.short_dir()), Launch::Open(x.clone())),
                         None => (
-                            l("Connecter Claude Code à ce compte…", "Set up Claude Code for this account…").to_string(),
-                            Launch::Create { label: s(a, "label").to_string(), email: s(a, "email").to_string() },
+                            if fr() {
+                                format!("Connecter {} à ce compte…", t.name)
+                            } else {
+                                format!("Set up {} for this account…", t.name)
+                            },
+                            Launch::Create {
+                                tool: t.clone(),
+                                label: s(a, "label").to_string(),
+                                link: launch::Link {
+                                    email: s(a, "email").to_string(),
+                                    org: a.get("orgUuid").and_then(Value::as_str).map(str::to_owned),
+                                },
+                            },
                         ),
                     };
                     let item = MenuItem::new(text, true, None);
                     let _ = sub.append(&item);
-                    (item, target)
-                });
+                    launch.push((item, target));
+                }
                 let open = MenuItem::new(l("Ouvrir dans le tableau de bord", "Open in the dashboard"), true, None);
                 let _ = sub.append(&open);
                 let use_here = self.vault_key_for(a).map(|(key, active)| {
@@ -987,25 +1084,65 @@ impl Ui {
         let _ = menu.append(&fx.open);
         let _ = menu.append(&fx.refresh);
 
-        // Claude Code sessions of this Mac: open one, create one, pick the terminal.
+        // Sessions of this Mac (Claude Code, Codex…): open one, link it, create one, pick the terminal.
         self.ses_items.clear();
-        self.ses_new = None;
+        self.ses_subs.clear();
+        self.ses_open.clear();
+        self.ses_links.clear();
+        self.ses_new.clear();
         self.term_items.clear();
         self.start_items.clear();
         self.start_pick = None;
-        if !self.sessions.is_empty() || accounts.iter().any(|a| s(a, "provider") == "claude") {
-            let ses = Submenu::new(l("Sessions Claude Code", "Claude Code sessions"), true);
+        if !shown.is_empty() {
+            let ses = Submenu::new("Sessions", true);
+            let with_tool = shown.len() > 1;
             for x in &self.sessions {
-                let item = MenuItem::new(session_text(x, &accounts), true, None);
-                let _ = ses.append(&item);
-                self.ses_items.push((item, x.clone()));
+                if x.tool.identity == launch::Identity::ClaudeJson {
+                    let item = MenuItem::new(session_text(x, &accounts, with_tool), true, None);
+                    let _ = ses.append(&item);
+                    self.ses_items.push((item, x.clone()));
+                    continue;
+                }
+                let sub = Submenu::new(session_text(x, &accounts, with_tool), true);
+                let open =
+                    MenuItem::new(if fr() { format!("▶ Ouvrir {}", x.tool.name) } else { format!("▶ Open {}", x.tool.name) }, true, None);
+                let _ = sub.append(&open);
+                self.ses_open.push((open, x.clone()));
+                if let Some(p) = x.tool.provider.as_deref() {
+                    let _ = sub.append(&PredefinedMenuItem::separator());
+                    let _ = sub.append(&MenuItem::new(l("Compte de cette session :", "Account of this session:"), false, None));
+                    for a in accounts.iter().filter(|a| s(a, "provider") == p) {
+                        let link = launch::Link {
+                            email: s(a, "email").to_string(),
+                            org: a.get("orgUuid").and_then(Value::as_str).map(str::to_owned),
+                        };
+                        let item = CheckMenuItem::new(s(a, "label"), !link.email.is_empty(), session_is(x, a), None);
+                        let _ = sub.append(&item);
+                        self.ses_links.push((item, x.dir.clone(), Some(link)));
+                    }
+                    let none = CheckMenuItem::new(l("Aucun", "None"), true, x.email.is_none(), None);
+                    let _ = sub.append(&none);
+                    self.ses_links.push((none, x.dir.clone(), None));
+                }
+                let _ = ses.append(&sub);
+                self.ses_subs.push((sub, x.clone()));
             }
             if !self.sessions.is_empty() {
                 let _ = ses.append(&PredefinedMenuItem::separator());
             }
-            let new = MenuItem::new(l("Nouvelle session…", "New session…"), true, None);
-            let _ = ses.append(&new);
-            self.ses_new = Some(new);
+            if let [t] = shown.as_slice() {
+                let new = MenuItem::new(l("Nouvelle session…", "New session…"), true, None);
+                let _ = ses.append(&new);
+                self.ses_new.push((new, t.clone()));
+            } else {
+                let new = Submenu::new(l("Nouvelle session", "New session"), true);
+                for t in &shown {
+                    let item = MenuItem::new(format!("{}…", t.name), true, None);
+                    let _ = new.append(&item);
+                    self.ses_new.push((item, t.clone()));
+                }
+                let _ = ses.append(&new);
+            }
             let term = Submenu::new(l("Ouvrir dans", "Open in"), true);
             let current = self.cfg.launch_opts().terminal.id();
             let mut choices: Vec<(&'static str, &str, bool)> = vec![];
@@ -1093,15 +1230,21 @@ impl Ui {
     /// In-place update (the menu may be open): texts, gauges, check marks, icon and title.
     fn refresh_texts(&mut self) {
         let accounts = self.accounts();
-        self.sessions = launch::discover(&home(), &self.sessions);
+        self.sessions = launch::discover(&home(), &self.tools, &self.cfg.links, &self.sessions);
         if self.signature(&accounts) != self.signature {
             return self.rebuild();
         }
-        if let (Some((item, _)), Some((_, label, head))) = (&self.launch_best, best_session(&self.sessions, &accounts)) {
-            item.set_text(best_text(&label, head));
+        for (item, x) in &self.launch_best {
+            if let Some((_, label, head)) = best_session(&self.sessions_of(&x.tool.id), &accounts) {
+                item.set_text(best_text(&x.tool.name, &label, head));
+            }
         }
+        let with_tool = self.shown_tools(&accounts).len() > 1;
         for (item, x) in &self.ses_items {
-            item.set_text(session_text(x, &accounts));
+            item.set_text(session_text(x, &accounts, with_tool));
+        }
+        for (sub, x) in &self.ses_subs {
+            sub.set_text(session_text(x, &accounts, with_tool));
         }
         let local = local_account();
         let by_id: HashMap<&str, &Value> = accounts.iter().map(|a| (s(a, "id"), a)).collect();
@@ -1223,7 +1366,7 @@ impl Ui {
             .filter(|e| !e.expired() && self.sw.active.as_deref() != Some(e.key.as_str()))
             .filter_map(|e| {
                 let (label, head) = Self::entry_info(e, &accounts);
-                let has_session = Self::entry_account(e, &accounts).is_some_and(|a| session_for(&self.sessions, a).is_some());
+                let has_session = Self::entry_account(e, &accounts).is_some_and(|a| session_for(&self.sessions_of("claude"), a).is_some());
                 head.map(|h| (label, h, has_session))
             })
             .filter(|(_, h, _)| *h >= 20.0)
@@ -1263,27 +1406,47 @@ impl Ui {
     }
 
     fn on_menu(&mut self, id: &MenuId) -> bool {
-        // Claude Code sessions.
+        // Sessions.
         let target = self
             .launch_best
             .iter()
             .chain(&self.ses_items)
+            .chain(&self.ses_open)
             .find(|(i, _)| i.id() == id)
             .map(|(_, x)| Launch::Open(x.clone()))
-            .or_else(|| self.items.iter().filter_map(|it| it.launch.as_ref()).find(|(i, _)| i.id() == id).map(|(_, t)| t.clone()));
+            .or_else(|| self.items.iter().flat_map(|it| &it.launch).find(|(i, _)| i.id() == id).map(|(_, t)| t.clone()));
         match target {
             Some(Launch::Open(x)) => {
                 launch::open(x, self.cfg.launch_opts(), None);
                 return false;
             }
-            Some(Launch::Create { label, email }) => {
-                launch::new_for_account(label, email, self.cfg.launch_opts());
+            Some(Launch::Create { tool, label, link }) => {
+                let (proxy, email) = (self.proxy.clone(), link.email.clone());
+                let linked = tool.identity == launch::Identity::Linked;
+                let on_created: launch::OnCreated = Box::new(move |dir| {
+                    if linked {
+                        let _ = proxy.send_event(UserEvent::Linked(dir, link));
+                    }
+                });
+                launch::new_for_account(tool, label, email, self.cfg.launch_opts(), on_created);
                 return false;
             }
             None => {}
         }
-        if self.ses_new.as_ref().is_some_and(|i| i.id() == id) {
-            launch::new_session(self.cfg.launch_opts());
+        if let Some((_, tool)) = self.ses_new.iter().find(|(i, _)| i.id() == id) {
+            launch::new_session(tool.clone(), self.cfg.launch_opts());
+            return false;
+        }
+        if let Some((_, dir, link)) = self.ses_links.iter().find(|(i, _, _)| i.id() == id) {
+            let (dir, link) = (dir.clone(), link.clone());
+            for (item, d, l) in &self.ses_links {
+                if *d == dir {
+                    item.set_checked(*l == link); // a click toggles the item itself, even the checked one
+                }
+            }
+            self.cfg.set_link(&dir, link);
+            self.cfg.save();
+            self.refresh_texts();
             return false;
         }
         if let Some((_, choice)) = self.start_items.iter().find(|(i, _)| i.id() == id) {
@@ -1539,61 +1702,62 @@ fn cached_accounts() -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// `--sessions`: Claude Code sessions of this Mac (▶ marks the one `--open` picks by default).
+/// Sessions of this Mac, for the command line.
+fn local_sessions() -> Vec<launch::Session> {
+    let cfg = Config::load();
+    launch::discover(&home(), &launch::tools(&home(), &cfg.tools), &cfg.links, &[])
+}
+
+/// `--sessions`: sessions of this Mac (▶ marks, for each tool, the one picked by default).
 fn sessions_cli() -> i32 {
     let accounts = cached_accounts();
-    let sessions = launch::discover(&home(), &[]);
-    let best = best_session(&sessions, &accounts).map(|b| b.0.dir);
+    let sessions = local_sessions();
+    let with_tool = sessions.iter().any(|x| x.tool.id != sessions[0].tool.id);
     for x in &sessions {
-        let mark = if best.as_ref() == Some(&x.dir) { "▶" } else { " " };
-        println!("{mark} {}", session_text(x, &accounts));
+        let mine: Vec<launch::Session> = sessions.iter().filter(|y| y.tool.id == x.tool.id).cloned().collect();
+        let best = best_session(&mine, &accounts).is_some_and(|b| b.0.dir == x.dir);
+        println!("{} {}", if best { "▶" } else { " " }, session_text(x, &accounts, with_tool));
     }
     if sessions.is_empty() {
-        println!("{}", l("Aucune session Claude Code sur ce Mac.", "No Claude Code session on this Mac."));
+        println!("{}", l("Aucune session sur ce Mac.", "No session on this Mac."));
     }
     0
 }
 
-/// `--open [<folder, e-mail or account>] [--in <dir>] [--dry-run]`: opens a session in the terminal (by
-/// default, the one with the most headroom), in `<dir>` or the configured start folder; `--dry-run` prints
-/// what would run.
+/// `--open [<words>] [--in <dir>] [--dry-run]`: opens in the terminal the session matching every word (tool,
+/// folder, e-mail or account; among several, the one with the most headroom), in `<dir>` or the configured
+/// start folder; `--dry-run` prints what would run.
 fn open_cli(args: &[String]) -> i32 {
-    let (mut dry, mut start, mut who) = (false, None, None);
+    let (mut dry, mut start, mut words) = (false, None, vec![]);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--dry-run" => dry = true,
             "--in" => start = it.next().map(|d| launch::expand(d)),
-            w => who = Some(w.to_lowercase()),
+            w => words.push(w.to_lowercase()),
         }
     }
     let accounts = cached_accounts();
-    let sessions = launch::discover(&home(), &[]);
-    let target = match &who {
-        None => best_session(&sessions, &accounts).map(|b| b.0).or_else(|| (sessions.len() == 1).then(|| sessions[0].clone())),
-        Some(w) => {
-            let hits: Vec<&launch::Session> = sessions
-                .iter()
-                .filter(|x| {
-                    let label = session_account(x, &accounts).map(|a| s(a, "label").to_lowercase()).unwrap_or_default();
-                    x.short_dir().to_lowercase().contains(w.as_str())
-                        || x.email.as_deref().unwrap_or("").to_lowercase().contains(w.as_str())
-                        || label.contains(w.as_str())
-                })
-                .collect();
-            if hits.len() != 1 {
-                if fr() {
-                    eprintln!("{} session(s) correspondent à « {w} » ; précise (voir --sessions).", hits.len());
-                } else {
-                    eprintln!("{} session(s) match “{w}”; be more specific (see --sessions).", hits.len());
-                }
-                return 2;
-            }
-            Some(hits[0].clone())
-        }
+    let hits: Vec<launch::Session> = local_sessions()
+        .into_iter()
+        .filter(|x| {
+            let label = session_account(x, &accounts).map(|a| s(a, "label")).unwrap_or_default();
+            let hay = [&x.tool.id, &x.tool.name, &x.short_dir(), x.email.as_deref().unwrap_or(""), label].join(" ").to_lowercase();
+            words.iter().all(|w| hay.contains(w.as_str()))
+        })
+        .collect();
+    let target = match hits.as_slice() {
+        [x] => Some(x.clone()),
+        _ => best_session(&hits, &accounts).map(|b| b.0),
     };
     let Some(x) = target else {
-        eprintln!("{}", l("Aucune session à ouvrir (voir --sessions).", "No session to open (see --sessions)."));
+        let what = words.join(" ");
+        match (hits.len(), fr()) {
+            (0, true) => eprintln!("Aucune session ne correspond à « {what} » (voir --sessions)."),
+            (0, false) => eprintln!("No session matches “{what}” (see --sessions)."),
+            (n, true) => eprintln!("{n} sessions correspondent à « {what} » ; précise (voir --sessions)."),
+            (n, false) => eprintln!("{n} sessions match “{what}”; be more specific (see --sessions)."),
+        }
         return 2;
     };
     let mut opts = Config::load().launch_opts();
@@ -1632,7 +1796,7 @@ fn dump(dir: &str) {
     save("swatch", draw::swatch(draw::account_color("acc-2")));
 }
 
-/// Command line: `--statusline`, `--sessions`, `--open [<session>]`, `--status` (vault accounts) and
+/// Command line: `--statusline`, `--sessions`, `--open [<words>]`, `--status` (vault accounts) and
 /// `--switch <e-mail fragment>`.
 fn cli(args: &[String]) -> Option<i32> {
     if args.len() > 1 {
@@ -1766,8 +1930,8 @@ fn main() {
         });
     }
 
+    let tools = launch::tools(&home(), &cfg.tools);
     let mut ui = Ui {
-        cfg,
         tray: None,
         fixed: None,
         signature: String::new(),
@@ -1785,14 +1949,19 @@ fn main() {
         sw_shortcut: None,
         sw_info: None,
         suggested: None,
-        sessions: launch::discover(&home(), &[]),
-        launch_best: None,
+        sessions: launch::discover(&home(), &tools, &cfg.links, &[]),
+        tools,
+        launch_best: vec![],
         ses_items: vec![],
-        ses_new: None,
+        ses_subs: vec![],
+        ses_open: vec![],
+        ses_links: vec![],
+        ses_new: vec![],
         term_items: vec![],
         start_items: vec![],
         start_pick: None,
         proxy: event_loop.create_proxy(),
+        cfg,
     };
 
     event_loop.run(move |event, _, control_flow| {
@@ -1816,6 +1985,7 @@ fn main() {
             }
             Event::UserEvent(UserEvent::Enrolled(id)) => ui.on_enrolled(&id),
             Event::UserEvent(UserEvent::Folder(p)) => ui.on_folder(&p),
+            Event::UserEvent(UserEvent::Linked(dir, link)) => ui.on_linked(&dir, link),
             Event::UserEvent(UserEvent::SwitchResult(res)) => match res {
                 Ok(email) => {
                     let accounts = ui.accounts();
@@ -1863,6 +2033,8 @@ mod tests {
             workdir: workdir.map(str::to_owned),
             workdir_ask: false,
             workdirs: workdirs.iter().map(|w| w.to_string()).collect(),
+            tools: Value::Null,
+            links: launch::Links::new(),
         }
     }
 
@@ -1895,18 +2067,20 @@ mod tests {
     }
 
     fn session(dir: &str, email: Option<&str>, org: Option<&str>) -> launch::Session {
-        launch::Session { dir: PathBuf::from(dir), default: false, email: email.map(str::to_owned), org_uuid: org.map(str::to_owned) }
+        let tool = launch::Tool::claude(Path::new("/h"));
+        launch::Session { tool, dir: PathBuf::from(dir), default: false, email: email.map(str::to_owned), org_uuid: org.map(str::to_owned) }
     }
 
     #[test]
     fn accounts_match_by_email_and_organisation() {
         let a = json!({ "provider": "claude", "email": "Me@Example.com", "orgUuid": "org-1" });
-        assert!(account_matches(&a, "me@example.com", Some("org-1")));
-        assert!(account_matches(&a, "me@example.com", None));
-        assert!(!account_matches(&a, "me@example.com", Some("org-2")));
-        assert!(!account_matches(&a, "", None));
-        assert!(!account_matches(&json!({ "provider": "codex", "email": "me@example.com" }), "me@example.com", None));
-        assert!(!account_matches(&json!({ "provider": "claude", "email": "" }), "", None));
+        assert!(account_matches(&a, "claude", "me@example.com", Some("org-1")));
+        assert!(account_matches(&a, "claude", "me@example.com", None));
+        assert!(!account_matches(&a, "claude", "me@example.com", Some("org-2")));
+        assert!(!account_matches(&a, "claude", "", None));
+        assert!(!account_matches(&a, "codex", "me@example.com", None));
+        assert!(account_matches(&json!({ "provider": "codex", "email": "me@example.com" }), "codex", "me@example.com", None));
+        assert!(!account_matches(&json!({ "provider": "claude", "email": "" }), "claude", "", None));
     }
 
     #[test]
@@ -1931,8 +2105,17 @@ mod tests {
         assert_eq!((x.dir, label.as_str()), (pro.dir.clone(), "Pro"));
 
         assert!(best_session(std::slice::from_ref(&fresh), &accounts).is_none());
-        assert_eq!(session_text(&perso, &accounts), "Perso — 82 % left · /h/.claude-perso");
-        assert_eq!(session_text(&fresh, &accounts), "not signed in · /h/.claude-fresh");
-        assert_eq!(session_text(&session("/h/.claude-x", Some("x@y.z"), None), &accounts), "x@y.z · /h/.claude-x");
+        assert_eq!(session_text(&perso, &accounts, false), "Perso — 82 % left · /h/.claude-perso");
+        assert_eq!(session_text(&fresh, &accounts, false), "not signed in · /h/.claude-fresh");
+        assert_eq!(session_text(&session("/h/.claude-x", Some("x@y.z"), None), &accounts, false), "x@y.z · /h/.claude-x");
+
+        // A Codex session goes with Codex accounts only.
+        let codex = launch::Session { tool: launch::Tool::codex(Path::new("/h")), dir: PathBuf::from("/h/.codex-gpt"), ..pro.clone() };
+        let (x, label, _) = best_session(std::slice::from_ref(&codex), &accounts).unwrap();
+        assert_eq!((x.dir, label.as_str()), (codex.dir.clone(), "GPT"));
+        assert_eq!(session_text(&codex, &accounts, true), "Codex · GPT — 99 % left · /h/.codex-gpt");
+        let unlinked = launch::Session { email: None, ..codex };
+        assert_eq!(session_text(&unlinked, &accounts, false), "no linked account · /h/.codex-gpt");
+        assert!(best_session(&[unlinked], &accounts).is_none());
     }
 }
